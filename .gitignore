@@ -1,0 +1,13 @@
+# Runtime state -- regenerates automatically, don't commit your test data
+backend/rooms_state.json
+backend/finished_squads.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS/editor noise
+.DS_Store
+.vscode/

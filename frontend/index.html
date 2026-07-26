@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Shop Together -- Myntra Hackathon MVP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css?v=48">
+</head>
+<body>
+
+<div class="phone">
+  <div class="notch"></div>
+
+  <div class="app-topbar">
+    <div id="topbar-left"><div class="m-logo">M</div></div>
+    <div class="topbar-pill"><span class="ph">Search in Myntra</span><span class="glyphs">🎤 📷</span></div>
+    <div class="topbar-icons">
+      <span class="ic">🔔<span class="dot">3</span></span>
+      <span class="ic">♡</span>
+      <span class="ic" onclick="showScreen('screen-profile')">👤</span>
+    </div>
+  </div>
+
+  <div class="screens-wrap">
+
+    <!-- HOME -->
+    <div id="screen-home" class="screen active">
+      <div class="home-location">
+        📍 Deliver to <b id="home-user-name">Yoshi</b> — Hostel, VIT Bhopal
+        <span style="margin-left:auto;">⌄</span>
+        <button type="button" id="demo-time-travel-fab" class="demo-fab" title="Demo: fast-forward a year">🕐</button>
+      </div>
+      <div id="demo-time-travel-fab-msg" class="demo-time-travel-msg home-fab-msg" style="display:none;"></div>
+
+      <div id="onboarding-modal" class="modal-overlay">
+        <div class="modal-card login-modal-card">
+
+          <div id="onboarding-step-mobile" class="onboarding-step">
+            <div class="login-title">Login or Signup</div>
+            <div class="login-mobile-row">
+              <span class="login-mobile-prefix">+91</span>
+              <span class="login-mobile-divider"></span>
+              <input id="onboarding-mobile" type="tel" placeholder="Mobile Number" maxlength="10" inputmode="numeric" />
+            </div>
+            <p class="login-terms">By continuing, I agree to the <span class="login-link">Terms of Use</span> &amp; <span class="login-link">Privacy Policy</span></p>
+            <button type="button" id="onboarding-mobile-continue" class="login-cta">CONTINUE</button>
+            <p class="login-help">Have trouble logging in? <span class="login-link">Get help</span></p>
+          </div>
+
+          <div id="onboarding-step-name" class="onboarding-step" style="display:none;">
+            <div class="login-title">Set up your profile</div>
+            <p class="login-subtitle">New number -- what should we call you?</p>
+            <form id="onboarding-name-form">
+              <input id="onboarding-name" type="text" placeholder="Full name, e.g. Yoshi" required />
+              <button class="login-cta" type="submit">CONTINUE</button>
+            </form>
+          </div>
+
+        </div>
+      </div>
+
+      <div id="reminder-modal" class="modal-overlay">
+        <div class="modal-card reminder-modal-card">
+          <div class="reminder-modal-head">
+            <div class="modal-title">✨ Around This Time...</div>
+            <button id="reminder-close-btn" class="reminder-close-btn" type="button">✕</button>
+          </div>
+          <div class="reminder-modal-sub" id="reminder-modal-sub"></div>
+
+          <div class="memory-card">
+            <div class="memory-headline" id="reminder-headline"></div>
+            <div class="memory-subnote" id="reminder-subnote"></div>
+            <div class="memory-orig" id="reminder-orig"></div>
+            <div class="memory-suggest-intro" id="reminder-suggest-intro"></div>
+            <div id="reminder-recs" class="reminder-recs"></div>
+          </div>
+
+          <button id="reminder-shop-btn" class="modal-secondary-btn reminder-full-squad-link" type="button">or start a full gift squad together →</button>
+        </div>
+      </div>
+
+      <div class="cat-tabs"><span class="active">ALL</span><span>MEN</span><span>WOMEN</span><span>KIDS</span></div>
+
+      <div class="shortcut-row">
+        <div class="shortcut"><div class="circ">👔</div><span>Fashion</span></div>
+        <div class="shortcut"><div class="circ">💄</div><span>Beauty</span></div>
+        <div class="shortcut"><div class="circ">🏠</div><span>Home</span></div>
+        <div class="shortcut"><div class="circ">👠</div><span>Footwear</span></div>
+        <div class="shortcut"><div class="circ">👜</div><span>Accessories</span></div>
+        <div class="shortcut"><div class="circ">✦</div><span>Value+</span></div>
+      </div>
+
+      <div class="trending-row">
+        <span class="trending-label">Trending</span>
+        <span class="trending-chip">Kurta Sets</span>
+        <span class="trending-chip">Sneakers</span>
+        <span class="trending-chip">Sarees</span>
+        <span class="trending-chip">Co-ords</span>
+        <span class="trending-chip">Blazers</span>
+      </div>
+
+      <div class="hero-banner">
+        <div class="eyebrow">THE FESTIVE SPOTLIGHT</div>
+        <h2>50–70% Off</h2>
+      </div>
+      <div class="dots"><span></span><span></span><span></span><span></span><span></span></div>
+      <div class="offer-strip">🏦 Partner Bank Offer — 10% Instant Discount</div>
+
+      <div class="home-squad-teaser" onclick="goToSquad()">
+        <div class="t">✦ Shop Together <span class="new-badge">NEW</span></div>
+        <div class="s">Swipe outfits live with your squad — tap to try it</div>
+      </div>
+
+      <div class="section-header"><span>Shop By Category</span></div>
+      <div class="cat-grid">
+        <div class="cat-grid-item">
+          <div class="cat-grid-media">
+            <img class="cat-media-img" loading="lazy" src="/static/images/p1-floral-wrap-dress.jpg" alt="Dresses" data-emoji-fallback="👗" onerror="this.outerHTML=this.dataset.emojiFallback">
+          </div>
+          <span>Dresses</span>
+        </div>
+        <div class="cat-grid-item">
+          <div class="cat-grid-media">
+            <img class="cat-media-img" loading="lazy" src="/static/images/p19-formal-trousers.jpg" alt="Bottoms" data-emoji-fallback="👖" onerror="this.outerHTML=this.dataset.emojiFallback">
+          </div>
+          <span>Bottoms</span>
+        </div>
+        <div class="cat-grid-item">
+          <div class="cat-grid-media">
+            <img class="cat-media-img" loading="lazy" src="/static/images/p4-denim-jacket.jpg" alt="Jackets" data-emoji-fallback="🧥" onerror="this.outerHTML=this.dataset.emojiFallback">
+          </div>
+          <span>Jackets</span>
+        </div>
+        <div class="cat-grid-item">
+          <div class="cat-grid-media">
+            <img class="cat-media-img" loading="lazy" src="/static/images/p34-canvas-tote.jpg" alt="Bags" data-emoji-fallback="👝" onerror="this.outerHTML=this.dataset.emojiFallback">
+          </div>
+          <span>Bags</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- PROFILE -->
+    <div id="screen-profile" class="screen">
+      <div class="profile-title-row"><h2>Profile</h2><span class="wallet-chip">₹0</span></div>
+
+      <div class="insider-banner">
+        <div class="title"><span id="profile-user-name">Yoshi</span>! 👑</div>
+        <p>Congrats! You've unlocked Extra Discounts, Rewards and Benefits.</p>
+        <button>Enroll & Become An Insider</button>
+      </div>
+
+      <div class="section-label">Shopping for <span id="profile-section-name">Yoshi</span></div>
+      <div class="avatar-row">
+        <div><div class="big-avatar" id="profile-avatar-initial">Y</div><div class="big-avatar-label" id="profile-avatar-label">Yoshi</div></div>
+      </div>
+
+      <div class="feature-row" onclick="goToSquad()">
+        <div class="ftxt">
+          <div class="t">✦ Shop Together <span class="new-badge">NEW</span></div>
+          <div class="s">Swipe outfits live with your squad</div>
+        </div>
+        <span>›</span>
+      </div>
+
+      <div class="plain-row"><div><div class="t">📦 Orders</div><div class="s">Track, return, or buy things again</div></div><span>›</span></div>
+      <div class="plain-row"><div><div class="t">♡ Wishlist</div><div class="s">Your most loved styles</div></div><span>›</span></div>
+      <div class="plain-row"><div><div class="t">⚙ Settings</div><div class="s">Manage notifications</div></div><span>›</span></div>
+
+      <div class="demo-tools-toggle" id="demo-tools-toggle">⚙ Demo tools</div>
+      <div class="demo-tools-panel" id="demo-tools-panel" style="display:none;">
+        <div class="demo-tools-btn-row">
+          <button id="demo-switch-name-btn" class="demo-time-travel-btn" type="button">🔄 Switch name</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SHOP TOGETHER LANDING -->
+    <div id="screen-landing" class="screen">
+      <div class="brand-tag">MYNTRA · SHOP TOGETHER</div>
+      <h1 class="hero">Swipe through outfits live, with your squad.</h1>
+      <p class="hero-sub">Start a session, drop the code to your friends, and shop the same feed together -- with an AI coordinator keeping score.</p>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="create">Start a squad</button>
+        <button class="tab-btn" data-tab="join">Join with code</button>
+      </div>
+
+      <div class="tab-panel active" id="panel-create">
+        <form id="create-form">
+          <div class="starting-as-row">Starting as <b id="create-starting-as-name">Yoshi</b></div>
+
+          <button type="button" class="optional-toggle" id="toggle-recipient">+ Buying for someone else? Tell us who</button>
+          <div class="optional-section" id="recipient-section" style="display:none;">
+            <label>Who's this for?</label>
+            <div class="recipient-chip-row">
+              <button type="button" class="recipient-chip" data-recipient="Myself">Myself</button>
+              <button type="button" class="recipient-chip" data-recipient="Mom">Mom</button>
+              <button type="button" class="recipient-chip" data-recipient="Dad">Dad</button>
+              <button type="button" class="recipient-chip" data-recipient="Sister">Sister</button>
+              <button type="button" class="recipient-chip" data-recipient="Brother">Brother</button>
+              <button type="button" class="recipient-chip" data-recipient="Partner">Partner</button>
+              <button type="button" class="recipient-chip" data-recipient="Friend">Friend</button>
+            </div>
+            <input id="create-recipient" type="text" placeholder="e.g. Sister, Mom, or type a name" />
+          </div>
+
+          <div class="form-row-2col">
+            <div>
+              <label>What's the plan?</label>
+              <select id="create-occasion">
+                <option value="Just Browsing">Just Browsing (all-year picks)</option>
+                <option value="Birthday">Birthday</option>
+                <option value="Anniversary">Anniversary</option>
+                <option value="Wedding / Festive Function">Wedding / Festive Function</option>
+                <option value="Farewell / Graduation">Farewell / Graduation</option>
+                <option value="Beach / Vacation Trip">Beach / Vacation Trip</option>
+                <option value="Office / Work">Office / Work</option>
+                <option value="Casual Everyday">Casual Everyday</option>
+                <option value="Monsoon Errands">Monsoon Errands</option>
+              </select>
+            </div>
+            <div>
+              <label>When (optional)</label>
+              <input id="create-when" type="date" />
+            </div>
+          </div>
+
+          <button type="button" class="optional-toggle" id="toggle-itinerary">+ Planning a multi-day trip? Add itinerary</button>
+          <div class="optional-section" id="itinerary-section" style="display:none;">
+            <label>Trip itinerary</label>
+            <input id="create-itinerary" type="text" placeholder="e.g. Mehendi, Shaadi, Reception" />
+            <div class="preset-row">
+              <button type="button" class="preset-chip" data-preset="Mehendi, Shaadi, Reception">🎊 Wedding Trip</button>
+              <button type="button" class="preset-chip" data-preset="Beach Day, Cafe Hopping, Date Night">🏖️ Beach Getaway</button>
+              <button type="button" class="preset-chip" data-preset="Office, Cafe Hopping">💼 Work Week</button>
+            </div>
+            <div class="hint">Separate each function with a comma -- lets you tag items to specific days.</div>
+          </div>
+
+          <label>Squad budget (₹)</label>
+          <input id="create-budget" type="number" value="5000" min="0" />
+
+          <button class="cta" type="submit">Start squad session</button>
+          <div class="hint">You'll get a 5-letter code to share.</div>
+        </form>
+      </div>
+
+      <div class="tab-panel" id="panel-join">
+        <form id="join-form">
+          <div class="starting-as-row">Joining as <b id="join-starting-as-name">Yoshi</b></div>
+          <label>Squad code</label>
+          <input id="join-code" type="text" placeholder="e.g. 7QK2M" maxlength="6" required style="text-transform:uppercase;" />
+          <button class="cta" type="submit">Join squad session</button>
+          <div class="field-error" id="join-error"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- ROOM -->
+    <div id="screen-room" class="screen">
+      <div id="event-toast" class="event-toast"></div>
+
+      <div id="catchup-banner" class="catchup-banner"></div>
+
+      <div id="roulette-modal" class="modal-overlay roulette-overlay">
+        <div class="modal-card roulette-modal-card">
+          <button id="roulette-close-btn" class="roulette-close-btn" type="button" aria-label="Close">✕</button>
+          <div class="roulette-modal-title">🎰 Surprise Us</div>
+          <p class="roulette-modal-note" id="roulette-modal-note">Spinning...</p>
+          <div id="roulette-reel" class="roulette-reel"></div>
+          <button id="roulette-done-btn" class="roulette-cta" type="button" style="display:none;">Done</button>
+        </div>
+      </div>
+
+      <div id="tie-explainer" class="modal-overlay">
+        <div class="modal-card">
+          <div class="modal-title">🎲 What's a tie-breaker?</div>
+          <p class="modal-body">When the squad splits evenly on an item, either of you can tap "Break the Tie." The AI coordinator makes a genuine 50/50 call right then -- no one wins or loses, it just keeps the squad moving instead of stalling on one item.</p>
+          <button id="tie-explainer-close" class="cta" type="button">Got it</button>
+        </div>
+      </div>
+
+      <div class="room-top">
+        <div class="room-top-row">
+          <div>
+            <div class="room-occasion-label">Shopping for</div>
+            <div id="room-occasion">--</div>
+            <div id="room-when"></div>
+            <div id="room-gift-note" class="room-gift-note" style="display:none;"></div>
+          </div>
+          <div class="room-top-actions">
+            <div class="code-chip">
+              <span id="room-code-chip">-----</span>
+              <button id="copy-code-btn">Copy code</button>
+            </div>
+            <button id="chat-toggle-btn" class="chat-toggle-btn" type="button">💬<span id="chat-unread-dot" class="unread-dot"></span></button>
+          </div>
+        </div>
+        <div class="members-row">
+          <div id="member-avatars"></div>
+          <span id="member-count"></span>
+        </div>
+      </div>
+
+      <div class="ai-bar"><span class="ai-dot">✦</span><span id="ai-note">Waiting for the squad...</span></div>
+
+      <div class="search-row">
+        <div class="search-pill">
+          <span>🔍</span>
+          <input id="product-search" type="text" placeholder="Search this squad's feed -- e.g. 'floral', 'jacket'" />
+        </div>
+        <button id="roulette-btn" class="roulette-btn" type="button" title="Surprise us with 5 picks">🎰 Surprise Us</button>
+      </div>
+
+      <div id="product-grid"></div>
+
+      <div class="cart-bar">
+        <div class="budget-row">
+          <div class="budget-track"><div id="budget-fill"></div></div>
+          <div id="budget-label">₹0</div>
+        </div>
+        <div class="cart-summary-row">
+          <span style="color:var(--muted); font-size:12px;"><span id="cart-count">0</span> items in squad cart</span>
+          <b id="cart-total">₹0</b>
+        </div>
+        <button id="finalize-btn">Finalize Squad Cart (0)</button>
+      </div>
+    </div>
+
+    <!-- CHECKOUT -->
+    <div id="screen-checkout" class="screen">
+      <div class="checkout-top">
+        <div class="checkout-top-row">
+          <div>
+            <div class="checkout-top-label">Squad Checkout</div>
+            <div id="checkout-occasion">--</div>
+          </div>
+          <button id="chat-toggle-btn-checkout" class="chat-toggle-btn" type="button">💬<span id="chat-unread-dot-checkout" class="unread-dot"></span></button>
+        </div>
+      </div>
+
+      <div id="validated-banner" class="validated-banner" style="display:none;"></div>
+      <div id="outfit-gap-nudge" class="outfit-gap-nudge" style="display:none;"></div>
+
+      <div class="checkout-section-label">Assign each item to who's actually buying it</div>
+      <div id="checkout-tag-hint" class="checkout-tag-hint" style="display:none;">
+        🏷️ We've pre-tagged items based on the section you found them in while shopping -- tap a tag chip to fix it if we guessed wrong.
+      </div>
+      <div id="checkout-items"></div>
+
+      <div class="checkout-section-label">Who's paying what</div>
+      <div id="checkout-people"></div>
+
+      <div id="checkout-status" class="checkout-status"></div>
+    </div>
+
+    <div id="chat-drawer" class="chat-drawer">
+      <div class="chat-drawer-header">
+        <span>💬 Squad Chat</span>
+        <button id="chat-close-btn" type="button">✕</button>
+      </div>
+      <div id="chat-context-note" class="chat-context-note" style="display:none;"></div>
+      <div id="chat-messages" class="chat-messages"></div>
+      <div id="typing-indicator" class="typing-indicator" style="display:none;">
+        <span id="typing-indicator-text"></span>
+        <span class="typing-dots"><span></span><span></span><span></span></span>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" placeholder="Say something..." autocomplete="off" />
+        <button type="submit">Send</button>
+      </form>
+    </div>
+
+  </div>
+
+  <div class="app-bottomnav">
+    <div class="nav-item active" id="nav-home" onclick="showScreen('screen-home')"><span class="nav-ic">🏠</span><span class="nav-label">Home</span></div>
+    <div class="nav-item"><span class="nav-ic">⚡</span><span class="nav-label">fwd</span></div>
+    <div class="nav-item"><span class="nav-ic">🕐</span><span class="nav-label">now</span></div>
+    <div class="nav-item"><span class="nav-ic">💎</span><span class="nav-label">LUXE</span></div>
+    <div class="nav-item"><span class="nav-ic">👜</span><span class="nav-label">Bag</span></div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=41"></script>
+</body>
+</html>
