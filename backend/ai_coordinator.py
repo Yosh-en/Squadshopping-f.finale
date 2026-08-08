@@ -1,13 +1,18 @@
 """
 The 'AI coordinator' for a shared shopping room.
 
-Two signals feed it:
+Signals it uses:
   1. Live swipe data (reactions, budget) -- as before.
   2. The trip/occasion date ("when"), mapped to an India-specific season
      via a plain month lookup -- no weather API, no key, nothing that can
      fail mid-demo. If you want *real* live weather later, Open-Meteo
      (open-meteo.com) is free and keyless, so it's a clean drop-in for v2
      -- good roadmap-slide line, not worth the live-demo risk tonight.
+
+NEW: score_feed() -- a real multi-stage recommender, replacing the old
+"just filter by occasion tag" ordering with something that actually adapts
+to what the squad votes on, while staying a plain scoring function (no LLM
+call in this loop -- see the module-level note above score_feed for why).
 """
 
 import random
@@ -61,12 +66,9 @@ KEYWORD_TAG_RULES = [
 ]
 
 # Mirrors frontend/app.js's OCCASION_TAGS -- kept in sync manually, same reasoning
-# as KEYWORD_TAG_RULES above. Used by the roulette picker to bias toward tags the
-# squad's occasion already favours, without hard-filtering to only those tags.
-# 'beauty' was added to Birthday/Anniversary -- gifting-appropriate categories
-# (lipstick, perfume) now have a real reason to surface for those two occasions,
-# whereas 'home' items (mugs, candles) are deliberately left out of every occasion
-# here -- they're general "more to explore" items, not occasion-specific picks.
+# as KEYWORD_TAG_RULES above. Used by score_feed() as the baseline preference for
+# every member (see Stage 1 below), and by the roulette picker to bias toward tags
+# the squad's occasion already favours, without hard-filtering to only those tags.
 OCCASION_TAGS = {
     "Birthday": ["ethnic", "party", "floral", "beauty"],
     "Anniversary": ["ethnic", "party", "beauty"],
@@ -96,6 +98,112 @@ def infer_function_for_item(item: dict, itinerary: list):
         if tags and item.get("tag") in tags:
             return fn
     return None
+
+
+# ---------------------------------------------------------------------------
+# Recommendation engine
+# ---------------------------------------------------------------------------
+# Deliberately a plain scoring function, not an LLM call -- an LLM call takes
+# a few hundred ms on a GPU, and this function runs on every single vote (the
+# feed re-ranks live as the squad swipes). At real scale that's hundreds of
+# model calls per session: too slow to feel responsive on a swipe, and far
+# more expensive than a normal ranking pass. A scoring function like this can
+# rank the whole 40-item catalog in well under a millisecond, with no GPU.
+# Any real LLM use belongs *outside* this loop -- e.g. tagging the catalog
+# overnight in the background, or turning a one-off typed note like "too
+# shiny" into a filter -- never sitting in the path of a live vote.
+#
+# Three stages, matching the actual answer given to the judges:
+#   1. Hard filter   -- an item whose price alone blows the squad's whole
+#                        budget can never outrank something affordable.
+#   2. Per-member     -- each member's own likes/passes *this session* build
+#      candidates        a personal tag preference. Never another member's
+#                        votes -- nobody's taste feeds into anyone else's.
+#   3. Least misery   -- the final score for an item is the MINIMUM across
+#                        all members, not the average. Averaging blends
+#                        different tastes into something nobody actually
+#                        wants; least-misery favours items nobody strongly
+#                        dislikes instead of erasing anyone's preference.
+# Before anyone's voted on anything, every member's score collapses to the
+# same occasion/season baseline -- so a brand new squad still gets a
+# sensibly-ordered feed from the very first render, not a random one.
+
+# Persistent (cross-session) taste counts toward a member's score at a much
+# lower weight than what they've actually voted on THIS session. Reasoning:
+# a squad's current occasion and this session's real votes are direct, fresh
+# signal about what's wanted right now; a persistent profile is a prior built
+# from past sessions that may have had a completely different occasion. It
+# should nudge, not override -- e.g. someone who's historically liked
+# 'western' shouldn't have that outrank a squad's actual live votes toward
+# 'ethnic' for a wedding happening right now.
+PERSISTENT_PROFILE_WEIGHT = 0.35
+
+
+def score_feed(room: dict, catalog: list, persistent_profiles: dict | None = None) -> dict:
+    """
+    persistent_profiles: optional {client_id: {tag: score}} -- each member's
+    cross-session taste profile (from backend/users.json, via whatever email
+    they logged in with). Pass {} or None for a room with no logged-in
+    members yet; every member's score then collapses to just the session-
+    scoped signal, same as before this parameter existed.
+    """
+    persistent_profiles = persistent_profiles or {}
+    catalog_by_id = {i["id"]: i for i in catalog}
+    reactions = room.get("reactions", {})
+    occasion = room.get("occasion")
+    budget = room.get("budget", 0)
+    season = season_hint(room.get("when", ""))
+
+    baseline_tags = set(OCCASION_TAGS.get(occasion, []))
+    if season:
+        baseline_tags |= set(season["tags"])
+
+    # Prefer "participants" (everyone who's ever joined, survives a
+    # temporary disconnect) over "members" (only currently-connected
+    # sockets) -- we don't want the ranking to shift just because someone's
+    # wifi blipped for a second.
+    member_ids = list(room.get("participants", {}).keys()) or list(room.get("members", {}).keys())
+
+    # Stage 2: each member's own tag preference, built only from their own
+    # votes on items seen so far this session.
+    member_tag_pref: dict = {m: Counter() for m in member_ids}
+    for item_id, votes in reactions.items():
+        item = catalog_by_id.get(item_id)
+        if not item:
+            continue
+        for member_id, vote in votes.items():
+            if member_id not in member_tag_pref:
+                continue
+            member_tag_pref[member_id][item["tag"]] += 1.0 if vote == "like" else -0.5
+
+    def base_score(item: dict) -> float:
+        score = 1.0 if item["tag"] in baseline_tags else 0.0
+        # Small tiebreak nudge so, among equally-relevant items, a better
+        # rated one edges ahead -- never enough to override an actual tag match.
+        score += (item.get("rating", 4.0) - 4.0) * 0.5
+        return score
+
+    scores: dict = {}
+    for item in catalog:
+        # Stage 1: hard filter -- can't ever be afforded solo, so it should
+        # never outrank something the squad can genuinely buy.
+        if budget and item["price"] > budget:
+            scores[item["id"]] = -999.0
+            continue
+
+        if not member_ids:
+            scores[item["id"]] = base_score(item)
+            continue
+
+        per_member_scores = []
+        for m in member_ids:
+            score = base_score(item) + member_tag_pref[m].get(item["tag"], 0.0)
+            score += PERSISTENT_PROFILE_WEIGHT * persistent_profiles.get(m, {}).get(item["tag"], 0.0)
+            per_member_scores.append(score)
+        # Stage 3: least misery.
+        scores[item["id"]] = min(per_member_scores)
+
+    return scores
 
 
 def pick_surprise_items(room: dict, catalog: list, n: int = 5) -> list:
