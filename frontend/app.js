@@ -12,8 +12,8 @@ function getOrCreateClientId(){
 }
 
 const state = {
-  clientId: getOrCreateClientId(), name:'', roomId:'', catalog:[], room:null, ws:null, aiNote:'', searchTerm:'',
-  knownTiedIds: new Set(), tieExplainerShown: false, chatOpen: false, lastChatCount: 0, hasInitializedTies: false,
+  clientId: getOrCreateClientId(), name: '', roomId: '', catalog: [], room: null, ws: null, aiNote: '', searchTerm: '',
+  knownTiedIds: new Set(), tieExplainerShown: false, chatOpen: false, lastChatCount: 0, hasInitializedTies: false, voiceMessages: [],
   rouletteItemIds: null, rouletteLanded: false, pendingTieItemId: null, demoFabMsgTimer: null,
   knownCartIds: new Set(), hasInitializedCart: false,
   typingDebounceTimer: null, isCurrentlyTypingSignal: false,
@@ -194,6 +194,7 @@ function resetPerRoomState(){
   state.knownCartIds = new Set();
   state.hasInitializedCart = false;
   state.lastChatCount = 0;
+  state.voiceMessages = [];
   state.rouletteItemIds = null;
   state.rouletteLanded = false;
   state.pendingTieItemId = null;
@@ -265,10 +266,20 @@ function enterRoom(roomId, name){
           showEventToast(msg.event);
         }
       }
-    } else if(msg.type === 'catchup'){
+    } else if (msg.type === 'catchup') {
       showCatchupBanner(msg.catchup);
-    } else if(msg.type === 'typing'){
+    } else if (msg.type === 'typing') {
       renderTypingIndicator(msg.typers || []);
+    }
+    else if (msg.type === 'voice_chat') {
+      if (msg.message) {
+        state.voiceMessages.push(msg.message);
+        renderChat(state.room);
+
+        if (!state.chatOpen) {
+          $all('.unread-dot').forEach(d => d.classList.add('show'));
+        }
+      }
     }
   };
   state.ws = ws;
@@ -288,29 +299,80 @@ function rouletteSlotContent(item, room){
   const myVote = votes[state.clientId];
   const inCart = room.cart.includes(item.id);
   const tieOutcome = (room.tie_breaks || {})[item.id];
-  const isTied = !inCart && !tieOutcome && Object.values(votes).length >= 2 && new Set(Object.values(votes)).size > 1;
+  const isTied = !inCart && !tieOutcome &&
+    Object.values(votes).length >= 2 &&
+    new Set(Object.values(votes)).size > 1;
+
+  const discount = item.mrp
+    ? Math.round((1 - item.price / item.mrp) * 100)
+    : 0;
 
   let footer;
+
   if(inCart){
     footer = `<div class="roulette-slot-status added">✓ In cart</div>`;
   } else if(tieOutcome){
-    footer = `<div class="roulette-slot-status">${tieOutcome === 'added' ? '✓ Added' : '✕ Skipped'}</div>`;
+    footer = `
+      <div class="roulette-slot-status">
+        ${tieOutcome === 'added' ? '✓ Added' : '✕ Skipped'}
+      </div>`;
   } else if(isTied){
-    footer = `<button class="roulette-slot-tie-btn" data-tie-item="${item.id}">🎲 Tie</button>`;
+    footer = `
+      <button class="roulette-slot-tie-btn" data-tie-item="${item.id}">
+        🎲 Tie
+      </button>`;
   } else {
     footer = `
       <div class="roulette-slot-actions">
-        <button class="roulette-slot-btn pass ${myVote === 'pass' ? 'active' : ''}" data-item="${item.id}" data-reaction="pass">✕</button>
-        <button class="roulette-slot-btn like ${myVote === 'like' ? 'active' : ''}" data-item="${item.id}" data-reaction="like">♥</button>
+        <button
+          class="roulette-slot-btn pass ${myVote === 'pass' ? 'active' : ''}"
+          data-item="${item.id}"
+          data-reaction="pass">
+          ✕
+        </button>
+
+        <button
+          class="roulette-slot-btn like ${myVote === 'like' ? 'active' : ''}"
+          data-item="${item.id}"
+          data-reaction="like">
+          ♥
+        </button>
       </div>
-      ${likeCount ? `<div class="roulette-slot-likes">${likeCount} liked</div>` : ''}`;
+      ${likeCount ? `<div class="roulette-slot-likes">${likeCount} liked</div>` : ''}
+    `;
   }
 
   return `
-    <span class="roulette-slot-emoji">${item.emoji}</span>
-    <span class="roulette-slot-name">${escapeHtml(item.name)}</span>
-    <span class="roulette-slot-price">₹${item.price}</span>
-    ${footer}`;
+    <div class="roulette-slot-media">
+      ${mediaHtml(item)}
+    </div>
+
+    <div class="roulette-slot-body">
+      <div class="roulette-slot-brand">
+        ${escapeHtml(item.brand)}
+      </div>
+
+      <div class="roulette-slot-name">
+        ${escapeHtml(item.name)}
+      </div>
+
+      <div class="roulette-slot-price-row">
+        <span class="roulette-slot-price">
+          ₹${item.price}
+        </span>
+
+        <span class="roulette-slot-mrp">
+          ₹${item.mrp}
+        </span>
+
+        <span class="roulette-slot-discount">
+          ${discount}% OFF
+        </span>
+      </div>
+    </div>
+
+    ${footer}
+  `;
 }
 
 function refreshRouletteSlots(){
@@ -815,25 +877,57 @@ function closeChatDrawer(){
   $('#chat-drawer').classList.remove('open');
 }
 
-function renderChat(room){
+function renderChat(room) {
   const messages = room.chat || [];
   const list = $('#chat-messages');
+
   list.innerHTML = messages.map(m => `
     <div class="chat-msg ${m.name === state.name ? 'me' : 'them'}">
       <div class="who">${escapeHtml(m.name)}</div>
       <div>${escapeHtml(m.text)}</div>
-    </div>`).join('') || `<div class="empty-note" style="padding:20px 8px;">No messages yet -- say hi 👋</div>`;
+    </div>
+  `).join('');
 
-  if(state.chatOpen){
+  // Add live voice messages.
+  state.voiceMessages.forEach(m => {
+    const wrapper = document.createElement('div');
+
+    wrapper.className = `chat-msg chat-audio-msg ${m.name === state.name ? 'me' : 'them'
+      }`;
+
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = m.name;
+
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.src = m.audio;
+
+    wrapper.appendChild(who);
+    wrapper.appendChild(audio);
+
+    list.appendChild(wrapper);
+  });
+
+  if (!messages.length && !state.voiceMessages.length) {
+    list.innerHTML = `
+      <div class="empty-note" style="padding:20px 8px;">
+        No messages yet -- say hi 👋
+      </div>
+    `;
+  }
+
+  if (state.chatOpen) {
     list.scrollTop = list.scrollHeight;
     state.lastChatCount = messages.length;
-  } else if(messages.length > state.lastChatCount){
+  } else if (messages.length > state.lastChatCount) {
     $all('.unread-dot').forEach(d => d.classList.add('show'));
   }
 }
 
 $('#chat-input').addEventListener('input', () => {
-  if(!state.isCurrentlyTypingSignal){
+  if (!state.isCurrentlyTypingSignal) {
     state.isCurrentlyTypingSignal = true;
     send('typing_start');
   }
@@ -844,38 +938,38 @@ $('#chat-input').addEventListener('input', () => {
   }, 2500);
 });
 
-function renderTypingIndicator(typers){
+function renderTypingIndicator(typers) {
   const others = typers.filter(n => n !== state.name);
   const wrap = $('#typing-indicator');
   const textEl = $('#typing-indicator-text');
-  if(!others.length){ wrap.style.display = 'none'; return; }
+  if (!others.length) { wrap.style.display = 'none'; return; }
   let text;
-  if(others.length === 1) text = `${others[0]} is typing`;
-  else if(others.length === 2) text = `${others[0]} and ${others[1]} are typing`;
+  if (others.length === 1) text = `${others[0]} is typing`;
+  else if (others.length === 2) text = `${others[0]} and ${others[1]} are typing`;
   else text = `${others.length} people are typing`;
   textEl.textContent = text;
   wrap.style.display = 'flex';
 }
 
-function assignItem(itemId, buyerId){ send('assign', {item_id: itemId, buyer_id: buyerId}); }
-function tagOccasion(itemId, tag){ send('tag_occasion', {item_id: itemId, tag}); }
-function removeItem(itemId){ send('remove_item', {item_id: itemId}); }
-function payShare(){ send('pay_share'); }
+function assignItem(itemId, buyerId) { send('assign', { item_id: itemId, buyer_id: buyerId }); }
+function tagOccasion(itemId, tag) { send('tag_occasion', { item_id: itemId, tag }); }
+function removeItem(itemId) { send('remove_item', { item_id: itemId }); }
+function payShare() { send('pay_share'); }
 
-function renderCheckout(cartItems, room){
+function renderCheckout(cartItems, room) {
   const itemsEl = $('#checkout-items');
   const peopleEl = $('#checkout-people');
   const statusEl = $('#checkout-status');
-  if(!itemsEl) return;
+  if (!itemsEl) return;
 
   $('#checkout-occasion').textContent = room.occasion;
 
-  if(!cartItems.length){
+  if (!cartItems.length) {
     itemsEl.innerHTML = `<div class="empty-note">No items in the squad cart yet -- go back and swipe a few into consensus first.</div>`;
     peopleEl.innerHTML = '';
     statusEl.innerHTML = '';
     const oldNote = document.getElementById('gift-split-note');
-    if(oldNote) oldNote.remove();
+    if (oldNote) oldNote.remove();
     return;
   }
 
@@ -887,7 +981,7 @@ function renderCheckout(cartItems, room){
   $('#checkout-tag-hint').style.display = itinerary.length ? 'block' : 'none';
 
   const memberIds = Object.keys(members);
-  const total = cartItems.reduce((s,i)=> s + i.price, 0);
+  const total = cartItems.reduce((s, i) => s + i.price, 0);
 
   const recipient = (room.gift_recipient || '').trim();
   const isGiftSplit = recipient && recipient.toLowerCase() !== 'myself' && memberIds.length > 1;
@@ -1081,7 +1175,7 @@ $('#chat-form').addEventListener('submit', (e) => {
   const input = $('#chat-input');
   const text = input.value.trim();
   if(!text) return;
-  send('chat', {text});
+  send('chat', {text}); 
   input.value = '';
   clearTimeout(state.typingDebounceTimer);
   if(state.isCurrentlyTypingSignal){
@@ -1089,6 +1183,137 @@ $('#chat-form').addEventListener('submit', (e) => {
     send('typing_stop');
   }
 });
+
+// ---------- Voice chat ---------------------------------------------------
+
+let mediaRecorder = null;
+let audioChunks = [];
+let audioMimeType = '';
+let recordingTimer = null;
+let recordingStartedAt = 0;
+
+const chatAudioBtn = $('#chat-audio-btn');
+
+chatAudioBtn.addEventListener('click', async () => {
+
+  // Stop the current recording.
+  if(mediaRecorder && mediaRecorder.state === 'recording'){
+    mediaRecorder.stop();
+    return;
+  }
+
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    alert('Your browser does not support microphone recording.');
+    return;
+  }
+
+  if(!window.MediaRecorder){
+    alert('Voice recording is not supported in this browser.');
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio:true
+    });
+
+    const mimeCandidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4'
+    ];
+
+    audioMimeType = mimeCandidates.find(type =>
+      MediaRecorder.isTypeSupported(type)
+    ) || '';
+
+    mediaRecorder = audioMimeType
+      ? new MediaRecorder(stream, { mimeType: audioMimeType })
+      : new MediaRecorder(stream);
+
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = (event) => {
+      if(event.data && event.data.size > 0){
+        audioChunks.push(event.data);
+      }
+    };
+
+    mediaRecorder.onstart = () => {
+      chatAudioBtn.classList.add('recording');
+      chatAudioBtn.textContent = '⏹️';
+
+      recordingStartedAt = Date.now();
+
+      recordingTimer = setInterval(() => {
+        const seconds = Math.floor(
+          (Date.now() - recordingStartedAt) / 1000
+        );
+
+        chatAudioBtn.title = `Recording ${seconds}s — click to stop`;
+
+        // Maximum 30 seconds.
+        if(seconds >= 30){
+          mediaRecorder.stop();
+        }
+      }, 500);
+    };
+
+    mediaRecorder.onstop = async () => {
+
+      clearInterval(recordingTimer);
+
+      chatAudioBtn.classList.remove('recording');
+      chatAudioBtn.textContent = '🎙️';
+      chatAudioBtn.title = 'Record voice message';
+
+      stream.getTracks().forEach(track => track.stop());
+
+      const blob = new Blob(audioChunks, {
+        type: audioMimeType || 'audio/webm'
+      });
+
+      // Keep voice messages reasonably small for the MVP.
+      if(blob.size > 1500000){
+        alert('Voice message is too large. Please keep it shorter.');
+        return;
+      }
+
+      const reader = new FileReader();
+
+      reader.onloadend = () => {
+        send('voice_chat', {
+          audio: reader.result,
+          mime: blob.type
+        });
+      };
+
+      reader.readAsDataURL(blob);
+    };
+
+    mediaRecorder.onerror = () => {
+      clearInterval(recordingTimer);
+
+      chatAudioBtn.classList.remove('recording');
+      chatAudioBtn.textContent = '🎙️';
+
+      stream.getTracks().forEach(track => track.stop());
+
+      alert('Something went wrong while recording.');
+    };
+
+    mediaRecorder.start();
+
+  } catch(error) {
+
+    console.error('Microphone error:', error);
+
+    alert(
+      'Microphone access was denied. Please allow microphone access in your browser.'
+    );
+  }
+});
+
 $('#tie-explainer-close').addEventListener('click', () => {
   $('#tie-explainer').classList.remove('show');
 });

@@ -753,6 +753,30 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                 if typing_status.get(room_id, {}).pop(client_id, None) is not None:
                     await broadcast_typing(room_id)
 
+            elif action == "voice_chat":
+                audio = data.get("audio") or ""
+                mime = data.get("mime") or "audio/webm"
+                # Basic validation.
+                if (
+                    isinstance(audio, str)
+                    and audio.startswith("data:audio/")
+                    and len(audio) <= 2_000_000
+                ):
+                    await manager.broadcast(
+                        room_id,
+                        {
+                            "type": "voice_chat",
+                            "message": {
+                                "name": name,
+                                "audio": audio,
+                                "mime": mime,
+                            },
+                        },
+                    )
+                # Voice messages are intentionally transient.
+                # Do not save them into rooms_state.json.
+                continue
+
             elif action == "surprise_roulette":
                 picks = pick_surprise_items(room, CATALOG)
                 event = {
