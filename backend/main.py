@@ -1,3 +1,4 @@
+import asyncio
 import json
 import random
 import string
@@ -11,7 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ai_coordinator import get_ai_suggestion, infer_function_for_item, reasoned_tie_break, pick_surprise_items
+from ai_coordinator import get_ai_suggestion, infer_function_for_item, reasoned_tie_break, pick_surprise_items, score_feed
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
@@ -70,6 +71,65 @@ def save_finished_squads():
 
 finished_squads: list = load_finished_squads()
 
+# ---- persistent accounts (email -> {name, taste_profile}) --------------
+# This is the one piece of state that survives a "Switch account" or a
+# browser restart -- everything else in this app is scoped to a room or a
+# tab. No passwords are stored here (or anywhere) -- see /api/login below
+# for why that's a deliberate choice, not an oversight.
+USERS_FILE = BASE_DIR / "users.json"
+
+
+def load_users() -> Dict[str, dict]:
+    if USERS_FILE.exists():
+        try:
+            return json.loads(USERS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def save_users():
+    try:
+        USERS_FILE.write_text(json.dumps(users), encoding="utf-8")
+    except OSError:
+        pass
+
+
+users: Dict[str, dict] = load_users()
+
+
+class LoginRequest(BaseModel):
+    email: str
+
+
+class SignupRequest(BaseModel):
+    email: str
+    name: str
+
+
+@app.post("/api/login")
+def login(req: LoginRequest):
+    email = req.email.strip().lower()
+    record = users.get(email)
+    if not record:
+        return {"known": False}
+    return {"known": True, "name": record.get("name", "")}
+
+
+@app.post("/api/signup")
+def signup(req: SignupRequest):
+    email = req.email.strip().lower()
+    name = req.name.strip()
+    if not email or not name:
+        return {"ok": False, "error": "missing_fields"}
+    if email in users:
+        # Someone else grabbed this email between the login check and now --
+        # don't silently overwrite an existing account's name/history.
+        return {"ok": False, "error": "already_exists"}
+    users[email] = {"name": name, "taste_profile": {}}
+    save_users()
+    return {"ok": True}
+
 
 class CreateRoomRequest(BaseModel):
     occasion: str = "Just browsing"
@@ -93,6 +153,7 @@ def new_room_state(occasion: str, budget: int, when: str = "", itinerary: list |
         "gift_recipient": gift_recipient,
         "members": {},
         "participants": {},
+        "participant_emails": {},
         "reactions": {},
         "cart": [],
         "tie_breaks": {},
@@ -105,7 +166,106 @@ def new_room_state(occasion: str, budget: int, when: str = "", itinerary: list |
         "session_number": None,
         "activity_log": [],
         "member_last_seen": {},
+        # Reservation window -- mirrors a real checkout's temporary inventory
+        # hold. Starts the moment anyone pays; if the whole order isn't paid
+        # up before it expires, everything releases and any payments made so
+        # far refund automatically. See RESERVATION_WINDOW_SECONDS below for
+        # why it's short here specifically.
+        "checkout_started_at": None,
+        "checkout_expires_at": None,
+        # Gift-split mode: "even" (default, existing behaviour) or "custom".
+        # gift_split_manual holds ONLY the people who've actually typed a
+        # number -- everyone else auto-splits whatever's left, evenly, via
+        # resolve_gift_split() below. This is what makes custom split behave
+        # like Splitwise instead of demanding everyone do arithmetic.
+        "gift_split_mode": "even",
+        "gift_split_manual": {},
     }
+
+
+# How long a squad has to finish paying once the first person pays their
+# share, before the reservation releases and refunds everyone. A real
+# checkout hold is typically 15-30 minutes; this is deliberately much
+# shorter so the release behaviour is actually demoable inside a pitch,
+# not just claimed on a slide.
+RESERVATION_WINDOW_SECONDS = 180
+
+
+def even_split(total: int, ids: list) -> dict:
+    """Splits `total` evenly across `ids`, correcting the last share so the
+    sum is always exactly `total` even after rounding -- avoids the classic
+    "everyone paid their share but the total's off by a rupee" bug."""
+    n = len(ids)
+    if n == 0:
+        return {}
+    shares, running = {}, 0
+    for i, cid in enumerate(ids):
+        if i == n - 1:
+            shares[cid] = total - running
+        else:
+            amt = round(total / n)
+            shares[cid] = amt
+            running += amt
+    return shares
+
+
+def resolve_gift_split(total: int, participant_ids: list, manual: dict) -> tuple[dict, bool]:
+    """The actual custom-split mechanic: anyone in `manual` pays exactly what
+    they typed; everyone else splits whatever's left evenly among themselves,
+    live, so typing one number redistributes the rest automatically instead
+    of asking every person to do the math. If manual amounts alone already
+    exceed the total, the remaining auto members get 0 rather than a negative
+    share, and the resulting sum won't match `total` -- `balanced` catches
+    that (and the ordinary case of manual-only entries not adding up) with
+    one check rather than needing separate cases."""
+    manual_ids = [pid for pid in participant_ids if pid in manual]
+    manual_sum = sum(manual[pid] for pid in manual_ids)
+    auto_ids = [pid for pid in participant_ids if pid not in manual]
+    remaining = max(0, total - manual_sum)
+    auto_shares = even_split(remaining, auto_ids) if auto_ids else {}
+    resolved = {pid: (manual[pid] if pid in manual else auto_shares.get(pid, 0)) for pid in participant_ids}
+    balanced = sum(resolved.values()) == total
+    return resolved, balanced
+
+
+def attach_gift_split_resolution(room: dict):
+    """Computes the live custom-split numbers and writes them onto the room
+    dict as gift_split_resolved / gift_split_balanced -- the frontend just
+    displays these directly rather than re-deriving the same logic in JS,
+    so the two can't drift out of sync with each other."""
+    if is_gift_split_room(room) and room.get("gift_split_mode") == "custom":
+        cart_total = sum(CATALOG_BY_ID[i]["price"] for i in room.get("cart", []) if i in CATALOG_BY_ID)
+        participant_ids = list(room.get("participants", {}).keys())
+        manual = room.get("gift_split_manual", {})
+        resolved, balanced = resolve_gift_split(cart_total, participant_ids, manual)
+        room["gift_split_resolved"] = resolved
+        room["gift_split_balanced"] = balanced
+    else:
+        room["gift_split_resolved"] = {}
+        room["gift_split_balanced"] = True
+
+
+async def expire_checkout_reservation(room_id: str, expires_at: float):
+    """Scheduled once, the moment a room's first payment comes in. If the
+    order still isn't fully paid by `expires_at` -- and nothing has reset the
+    window in the meantime (e.g. a completed order, or the room disappearing)
+    -- releases the hold: clears every payment (refund) and the reservation
+    fields, then broadcasts so everyone's "Pay my share" button reappears."""
+    await asyncio.sleep(max(0, expires_at - time.time()))
+    room = rooms.get(room_id)
+    if not room:
+        return
+    if room.get("session_number") is not None:
+        return  # already completed for real -- nothing to release
+    if room.get("checkout_expires_at") != expires_at:
+        return  # window was reset/renewed since this task was scheduled
+    room["payments"] = {}
+    room["checkout_started_at"] = None
+    room["checkout_expires_at"] = None
+    await broadcast_state(room_id, event={
+        "name": "System",
+        "verb": "released the reservation -- the window expired, so any payments made have been refunded and everyone can pay again",
+    })
 
 
 def compute_catchup(room: dict, client_id: str) -> dict | None:
@@ -181,12 +341,29 @@ def create_demo_room():
     return {"room_id": code}
 
 
+def persistent_profiles_for_room(room: dict) -> Dict[str, dict]:
+    """client_id -> that person's persistent taste_profile from users.json,
+    via the email they logged in with (room["participant_emails"], set on
+    websocket connect). Anyone without a stored email (shouldn't normally
+    happen, but the emails query param is optional) just gets an empty
+    profile -- score_feed() already treats that as "no persistent signal yet",
+    not an error."""
+    emails = room.get("participant_emails", {})
+    return {
+        cid: users.get(email, {}).get("taste_profile", {})
+        for cid, email in emails.items()
+        if email
+    }
+
+
 @app.get("/api/rooms/{room_id}")
 def get_room(room_id: str):
     room = rooms.get(room_id.upper())
     if not room:
         return {"error": "not_found"}
-    return {"catalog": CATALOG, **room}
+    attach_gift_split_resolution(room)
+    feed_scores = score_feed(room, CATALOG, persistent_profiles=persistent_profiles_for_room(room))
+    return {"catalog": CATALOG, "feed_scores": feed_scores, **room}
 
 
 @app.get("/api/reminders")
@@ -276,8 +453,14 @@ manager = ConnectionManager()
 
 async def broadcast_state(room_id: str, event: dict | None = None):
     room = rooms[room_id]
+    attach_gift_split_resolution(room)
     ai_note = get_ai_suggestion(room, CATALOG)
-    payload = {"type": "state", "room": room, "ai_note": ai_note}
+    # Recomputed on every broadcast -- it's a plain scoring pass over the
+    # catalog (no GPU, sub-millisecond), so re-running it on every vote is
+    # cheap. This is exactly the "ranking stays with cheap, fast models"
+    # answer given to the judges, made real: nothing here waits on an LLM.
+    feed_scores = score_feed(room, CATALOG, persistent_profiles=persistent_profiles_for_room(room))
+    payload = {"type": "state", "room": room, "ai_note": ai_note, "feed_scores": feed_scores}
     if event:
         payload["event"] = event
     await manager.broadcast(room_id, payload)
@@ -308,6 +491,7 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
 
     name = ws.query_params.get("name", "Guest")
     client_id = ws.query_params.get("client_id") or name
+    email = (ws.query_params.get("email") or "").strip().lower()
 
     await manager.connect(room_id, client_id, ws)
     room = rooms[room_id]
@@ -318,6 +502,8 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
 
     room["members"][client_id] = name
     room.setdefault("participants", {})[client_id] = name
+    if email:
+        room.setdefault("participant_emails", {})[client_id] = email
     await broadcast_state(room_id)
 
     try:
@@ -358,6 +544,19 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                     "item": item["name"] if item else item_id,
                     "item_id": item_id,
                 }
+
+                # Persist this vote into the voter's account, if they're
+                # logged in -- this is the one line that makes taste carry
+                # across sessions rather than resetting every time a squad
+                # closes. Kept as a small, same-shaped nudge to the session-
+                # scoped version in ai_coordinator.score_feed(); score_feed
+                # itself is what keeps this from ever dominating a fresh
+                # squad's own occasion/season baseline.
+                voter_email = room.get("participant_emails", {}).get(client_id)
+                if voter_email and item and voter_email in users:
+                    profile = users[voter_email].setdefault("taste_profile", {})
+                    profile[item["tag"]] = profile.get(item["tag"], 0.0) + (1.0 if reaction == "like" else -0.5)
+                    save_users()
 
             elif action == "break_tie":
                 item_id = data["item_id"]
@@ -433,16 +632,65 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                     "item": item["name"] if item else item_id,
                 }
 
+            elif action == "set_split_mode":
+                mode = data.get("mode")
+                if mode not in ("even", "custom"):
+                    continue
+                room["gift_split_mode"] = mode
+                # No seeding needed -- an empty gift_split_manual means
+                # everyone's on auto, which resolve_gift_split() already
+                # turns into a valid even split. The squad starts from a
+                # correct state and only deviates from it once someone
+                # actually types a number.
+                event = {"name": name, "verb": f"switched to {'custom split' if mode == 'custom' else 'even split'}"}
+
+            elif action == "set_custom_amount":
+                # Deliberately only ever writes the CALLER's own entry -- a
+                # person can adjust their own contribution, never anyone
+                # else's. Everyone NOT in this dict auto-splits whatever's
+                # left, live -- see resolve_gift_split().
+                try:
+                    amount = max(0, round(float(data.get("amount", 0))))
+                except (TypeError, ValueError):
+                    continue
+                room.setdefault("gift_split_manual", {})[client_id] = amount
+                event = {"name": name, "verb": "adjusted their share"}
+
+            elif action == "clear_custom_amount":
+                # Lets someone go back to "auto" for themselves -- their
+                # share reverts to an even split of whatever's left among
+                # the other still-auto members, instead of being stuck at
+                # whatever they last typed.
+                if room.get("gift_split_manual", {}).pop(client_id, None) is not None:
+                    event = {"name": name, "verb": "reset their share to auto"}
+                else:
+                    continue
+
             elif action == "pay_share":
-                room["payments"][client_id] = True
+                cart_total = sum(CATALOG_BY_ID[i]["price"] for i in room.get("cart", []) if i in CATALOG_BY_ID)
 
                 if is_gift_split_room(room):
-                    cart_total = sum(
-                        CATALOG_BY_ID[i]["price"] for i in room.get("cart", []) if i in CATALOG_BY_ID
-                    )
-                    participant_count = max(len(room.get("participants", {})), 1)
-                    my_total = round(cart_total / participant_count)
-                    buyer_ids = set(room.get("participants", {}).keys())
+                    participant_ids = list(room.get("participants", {}).keys())
+                    if room.get("gift_split_mode") == "custom":
+                        manual = room.get("gift_split_manual", {})
+                        resolved, balanced = resolve_gift_split(cart_total, participant_ids, manual)
+                        if not balanced:
+                            # Split doesn't add up yet -- reject the payment
+                            # rather than accepting a number nobody agreed to.
+                            # No `continue` here since we still want to notify
+                            # the squad via the toast, just without registering
+                            # a payment.
+                            allocated_total = sum(resolved.values())
+                            event = {
+                                "name": name,
+                                "verb": f"tried to pay, but the split only adds up to ₹{allocated_total} of ₹{cart_total} so far",
+                            }
+                            await broadcast_state(room_id, event=event)
+                            continue
+                        my_total = resolved.get(client_id, 0)
+                    else:
+                        my_total = round(cart_total / max(len(participant_ids), 1))
+                    buyer_ids = set(participant_ids)
                 else:
                     my_total = sum(
                         CATALOG_BY_ID[i]["price"]
@@ -451,13 +699,26 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                     )
                     buyer_ids = set(room["assignments"].values())
 
+                room["payments"][client_id] = True
                 event = {"name": name, "verb": "paid their share", "item": f"₹{my_total}"}
 
-                everyone_paid = buyer_ids and all(room["payments"].get(b) for b in buyer_ids)
+                # An order with any unassigned item is never "done," no matter
+                # who's paid what -- otherwise a squad where only some items
+                # have a buyer yet can look fully paid the moment that subset
+                # settles up, which both marks the order complete too early
+                # and skips the reservation window entirely (this was the bug:
+                # the very first payment silently short-circuited straight to
+                # "complete" instead of ever starting the countdown).
+                fully_assigned = is_gift_split_room(room) or all(
+                    i in room["assignments"] for i in room.get("cart", [])
+                )
+                everyone_paid = fully_assigned and buyer_ids and all(room["payments"].get(b) for b in buyer_ids)
                 if everyone_paid and room.get("session_number") is None:
                     global completed_sessions_count
                     completed_sessions_count += 1
                     room["session_number"] = completed_sessions_count
+                    room["checkout_started_at"] = None
+                    room["checkout_expires_at"] = None
 
                     bought_items = [
                         {"id": i, "name": CATALOG_BY_ID[i]["name"], "tag": CATALOG_BY_ID[i]["tag"]}
@@ -473,6 +734,14 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                         "had_itinerary": bool(room.get("itinerary")),
                     })
                     save_finished_squads()
+                elif room.get("checkout_expires_at") is None:
+                    # First payment in on an order that isn't already
+                    # complete -- start (or restart, if a previous window
+                    # already expired and released) the reservation clock.
+                    now = time.time()
+                    room["checkout_started_at"] = now
+                    room["checkout_expires_at"] = now + RESERVATION_WINDOW_SECONDS
+                    asyncio.create_task(expire_checkout_reservation(room_id, room["checkout_expires_at"]))
 
             elif action == "chat":
                 text = (data.get("text") or "").strip()
