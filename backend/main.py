@@ -143,6 +143,11 @@ class CreateRoomRequest(BaseModel):
     # "Myself"); name is optional free text, never overwritten by a chip tap.
     gift_recipient_relation: str = ""
     gift_recipient_name: str = ""
+    # Whoever's actually creating the room -- needed so a reminder later can
+    # tell "your Mom" from "your squadmate's Mom." Without this, everyone who
+    # was ever in a gift squad would see the exact same reminder labelled the
+    # exact same way, even if the relationship was never theirs to begin with.
+    creator_email: str = ""
 
 
 def make_room_code() -> str:
@@ -164,7 +169,7 @@ def gift_recipient_display(relation: str, name: str) -> str:
 
 def new_room_state(
     occasion: str, budget: int, when: str = "", itinerary: list | None = None,
-    gift_recipient_relation: str = "", gift_recipient_name: str = "",
+    gift_recipient_relation: str = "", gift_recipient_name: str = "", creator_email: str = "",
 ) -> dict:
     return {
         "occasion": occasion,
@@ -173,6 +178,7 @@ def new_room_state(
         "itinerary": itinerary or [],
         "gift_recipient_relation": gift_recipient_relation,
         "gift_recipient_name": gift_recipient_name,
+        "gift_owner_email": creator_email.strip().lower(),
         "members": {},
         "participants": {},
         "participant_emails": {},
@@ -338,7 +344,7 @@ def create_room(req: CreateRoomRequest):
     code = make_room_code()
     rooms[code] = new_room_state(
         req.occasion, req.budget, req.when, req.itinerary,
-        req.gift_recipient_relation, req.gift_recipient_name,
+        req.gift_recipient_relation, req.gift_recipient_name, req.creator_email,
     )
     save_rooms()
     return {"room_id": code}
@@ -432,6 +438,26 @@ def get_reminders(email: str = ""):
         recipient_name = squad.get("gift_recipient_name", "")
         recipient_display = gift_recipient_display(relation, recipient_name)
 
+        # A relationship belongs to whoever set it, not to everyone who
+        # happened to co-shop it -- Aishnaa helping buy for Yoshita's mom
+        # doesn't make it Aishnaa's mom too. If the viewer is the owner, the
+        # label stays exactly as before ("Mom"); if not, it's attributed to
+        # whoever it actually belongs to ("Yoshita's Mom") so the reminder
+        # never implies a relationship the viewer doesn't have.
+        owner_email = (squad.get("gift_owner_email") or "").strip().lower()
+        is_owner = bool(owner_email) and email == owner_email
+        is_myself_relation = relation.strip().lower() == "myself"
+        if is_owner or not owner_email:
+            person_label = recipient_display
+        elif is_myself_relation:
+            # "Myself" needs its own case: "Yoshita's Myself" reads as
+            # nonsense. What the non-owner actually needs to know is whose
+            # purchase this was, plain and simple.
+            person_label = users.get(owner_email, {}).get("name") or next(iter(squad.get("members", [])), "a squadmate")
+        else:
+            owner_name = users.get(owner_email, {}).get("name") or next(iter(squad.get("members", [])), "a squadmate")
+            person_label = f"{owner_name}'s {recipient_display}" if recipient_display else f"{owner_name}'s"
+
         bought_ids = {b["id"] for b in bought}
         bought_tags = {b["tag"] for b in bought}
         recs = [item for item in CATALOG if item["id"] not in bought_ids and item["tag"] in bought_tags][:3]
@@ -441,9 +467,10 @@ def get_reminders(email: str = ""):
         squad["reminded"] = True
         reminders.append({
             "occasion": squad["occasion"],
-            "person": recipient_display,
+            "person": person_label,
             "recipient_relation": relation,
             "recipient_name": recipient_name,
+            "is_owner": is_owner or not owner_email,
             "room_code": squad["room_code"],
             "bought_item_name": bought[0]["name"] if bought else None,
             "bought_item_emoji": bought_first["emoji"] if bought_first else None,
@@ -795,6 +822,7 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                         "room_code": room_id,
                         "gift_recipient_relation": room.get("gift_recipient_relation", ""),
                         "gift_recipient_name": room.get("gift_recipient_name", ""),
+                        "gift_owner_email": room.get("gift_owner_email", ""),
                         "bought_items": bought_items,
                         "had_itinerary": bool(room.get("itinerary")),
                         "archived": False,
