@@ -416,7 +416,16 @@ function enterRoom(roomId, name){
 // ---- Product media (image or emoji fallback) ------------------------------
 function mediaHtml(item){
   if(!item || !item.image) return (item && item.emoji) || '';
-  return `<img class="media-img" loading="lazy" decoding="async" src="${escapeHtml(item.image)}" alt="${escapeHtml(item.name || '')}" data-emoji-fallback="${item.emoji || ''}" onerror="this.outerHTML=this.dataset.emojiFallback">`;
+
+  const imageUrl = `${item.image}?v=2`;
+
+  return `<img class="media-img"
+    loading="lazy"
+    decoding="async"
+    src="${escapeHtml(imageUrl)}"
+    alt="${escapeHtml(item.name || '')}"
+    data-emoji-fallback="${item.emoji || ''}"
+    onerror="this.outerHTML=this.dataset.emojiFallback">`;
 }
 
 function rouletteSlotContent(item, room){
