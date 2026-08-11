@@ -32,6 +32,7 @@ function showScreen(id){
   $('#'+id).classList.add('active');
   $all('.nav-item').forEach(n=>n.classList.remove('active'));
   if(id === 'screen-home') $('#nav-home').classList.add('active');
+  if(id === 'screen-landing') updateSquadResumeBanner();
 
   if(id !== 'screen-room' && id !== 'screen-checkout' && state.chatOpen){
     closeChatDrawer();
@@ -51,13 +52,45 @@ function showScreen(id){
 // finished checkout yet (session_number only gets set once everyone's paid).
 // Once a squad's order is placed, there's nothing left to do in it -- tapping
 // "Shop Together" again should offer a fresh start, not reopen a done order.
-function goToSquad(){
-  const roomStillActive = state.roomId && state.room && !state.room.session_number;
-  if(roomStillActive){
-    showScreen('screen-room');
+// Whether there's an active (unfinished) squad worth offering to resume --
+// session_number only gets set once everyone's paid, so an unfinished squad
+// still has real work left in it.
+function hasActiveSquad(){
+  return !!(state.roomId && state.room && !state.room.session_number);
+}
+
+// Updates (or hides) the "You've got a squad going" banner on the landing
+// screen. Called from showScreen() itself rather than only from goToSquad(),
+// so it stays correct regardless of how someone actually arrives at
+// landing -- tapping the teaser, using the back button, or switching tabs.
+function updateSquadResumeBanner(){
+  const banner = $('#squad-resume-banner');
+  if(!banner) return;
+  if(!hasActiveSquad()){
+    banner.style.display = 'none';
     return;
   }
-  if(state.roomId) leaveRoom(); // clean up a finished room before showing a blank slate
+  $('#squad-resume-detail').textContent = `${state.room.occasion} -- code ${state.roomId}`;
+  banner.style.display = 'flex';
+}
+
+$('#squad-resume-continue-btn').addEventListener('click', () => {
+  showScreen('screen-room');
+});
+$('#squad-resume-fresh-link').addEventListener('click', () => {
+  leaveRoom();
+  updateSquadResumeBanner();
+});
+
+// No longer force-reenters an active squad -- previously, tapping "Shop
+// Together" while a squad was already open would silently drop you straight
+// back into it with no way to start something new short of finishing
+// checkout first. Now it always goes to landing; if there's an active squad,
+// the resume banner above offers a clear choice instead of deciding for you.
+function goToSquad(){
+  if(state.roomId && state.room && state.room.session_number){
+    leaveRoom(); // a finished squad has nothing left to resume -- clean slate
+  }
   showScreen('screen-landing');
 }
 
@@ -232,6 +265,7 @@ $('#create-form').addEventListener('submit', async (e) => {
       occasion, budget, when, itinerary,
       gift_recipient_relation: giftRecipientRelation,
       gift_recipient_name: giftRecipientName,
+      creator_email: getStoredUserEmail(),
     })
   });
   const data = await res.json();
@@ -357,7 +391,7 @@ function enterRoom(roomId, name){
     } else if (msg.type === 'catchup') {
       showCatchupBanner(msg.catchup);
     } else if (msg.type === 'typing') {
-      renderTypingIndicator(msg.typers || []);
+      renderTypingIndicator(msg.typers || [], msg.recorders || []);
     }
     else if (msg.type === 'voice_chat') {
       if (msg.message) {
@@ -410,6 +444,21 @@ function rouletteSlotContent(item, room){
       </div>`;
   } else if(isTied){
     footer = `
+      <div class="roulette-slot-actions">
+        <button
+          class="roulette-slot-btn pass ${myVote === 'pass' ? 'active' : ''}"
+          data-item="${item.id}"
+          data-reaction="pass">
+          ✕
+        </button>
+
+        <button
+          class="roulette-slot-btn like ${myVote === 'like' ? 'active' : ''}"
+          data-item="${item.id}"
+          data-reaction="like">
+          ♥
+        </button>
+      </div>
       <button class="roulette-slot-tie-btn" data-tie-item="${item.id}">
         🎲 Tie
       </button>`;
@@ -628,7 +677,7 @@ function formatWhen(iso){
   return d.toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
 }
 
-function cardHtml(item, room){
+function cardHtml(item, room, isTopPick=false){
   const votes = room.reactions[item.id] || {};
   const likeCount = Object.values(votes).filter(v=>v==='like').length;
   const myVote = votes[state.clientId];
@@ -645,7 +694,18 @@ function cardHtml(item, room){
   if(tieOutcome){
     footer = `<div class="tie-outcome">🎲 ${escapeHtml(tieReason || (tieOutcome === 'added' ? 'Added to cart.' : 'Skipped.'))}</div>`;
   } else if(isTied){
-    footer = `<button class="tie-btn" data-tie-item="${item.id}">🎲 Break the tie</button>`;
+    // Talked it out and actually agree? Changing your own vote resolves this
+    // naturally, no AI needed -- "Break the Tie" stays available for genuine
+    // deadlock, but it's an option now, not the only door out. Kept as its
+    // own line below (not squeezed between the round vote buttons) so the
+    // normal vote row keeps the exact same rhythm as every other card.
+    footer = `
+      <div class="card-actions">
+        <button class="react-btn pass ${myVote==='pass' ? 'active' : ''}" data-item="${item.id}" data-reaction="pass">✕</button>
+        <span class="like-count">${likeCount ? likeCount + ' liked' : ''}</span>
+        <button class="react-btn like ${myVote==='like' ? 'active' : ''}" data-item="${item.id}" data-reaction="like">♥</button>
+      </div>
+      <button class="tie-btn" data-tie-item="${item.id}">🎲 Break the tie</button>`;
   } else {
     footer = `
       <div class="card-actions">
@@ -658,6 +718,7 @@ function cardHtml(item, room){
   return `
     <div class="card ${inCart ? 'in-cart' : ''} ${isTied ? 'tied' : ''} ${needsMyVote ? 'needs-vote' : ''} ${iLikedIt ? 'my-like' : ''}" data-card="${item.id}">
       ${inCart ? '<span class="cart-badge">In squad cart</span>' : ''}
+      ${!inCart && !isTied && !needsMyVote && !iLikedIt && isTopPick ? '<span class="top-pick-badge">✦ Top pick for you</span>' : ''}
       ${!inCart && justLaunched ? '<span class="launched-badge">Just Launched</span>' : ''}
       ${isTied ? '<span class="split-badge">Split vote</span>' : ''}
       ${needsMyVote ? '<span class="needs-vote-badge">Needs your vote</span>' : ''}
@@ -770,48 +831,68 @@ function buildItinerarySections(items, itinerary){
 let cardSignatures = {};
 let lastFilteredKey = null;
 
-function cardSignature(item, room){
+function cardSignature(item, room, isTopPick=false){
   return JSON.stringify([
     room.reactions[item.id] || {},
     room.cart.includes(item.id),
     (room.tie_breaks || {})[item.id] || null,
+    isTopPick,
   ]);
+}
+
+// The single highest-scoring item nobody's voted on yet -- makes the
+// recommendation engine's effect visible the moment the shelf loads,
+// instead of only showing up as a subtle reorder nobody notices. Only ever
+// one badge at a time, and never on something already decided (voted,
+// carted, tied) -- the point is to flag what's worth looking at next, not
+// to relitigate something already settled.
+function topPickId(items, room){
+  let bestId = null, bestScore = -Infinity;
+  for(const item of items){
+    if(room.cart.includes(item.id)) continue;
+    if((room.tie_breaks || {})[item.id]) continue;
+    if((room.reactions[item.id] || {})[state.clientId] !== undefined) continue;
+    const score = state.feedScores[item.id] ?? -Infinity;
+    if(score > bestScore){ bestScore = score; bestId = item.id; }
+  }
+  return bestId;
 }
 
 function renderGrid(filtered, room){
   const grid = $('#product-grid');
   const itinerary = room.itinerary || [];
+  const topPick = topPickId(filtered, room);
 
   let ordered, filteredKey, buildHtml;
 
   if(itinerary.length){
     const { sections, rest } = buildItinerarySections(filtered, itinerary);
     ordered = [...sections.flatMap(s => s.items), ...rest];
-    filteredKey = ordered.map(i => i.id).join(',') + '|itin:' + itinerary.join('>');
+    filteredKey = ordered.map(i => i.id).join(',') + '|itin:' + itinerary.join('>') + '|top:' + topPick;
     buildHtml = () => {
       let html = '';
       sections.forEach(sec => {
         html += `<div class="occasion-divider">✦ Recs for ${escapeHtml(sec.label)}</div>`;
         html += sec.items.length
-          ? sec.items.map(item => cardHtml(item, room)).join('')
+          ? sec.items.map(item => cardHtml(item, room, item.id === topPick)).join('')
           : `<div class="empty-note">Nothing tagged for "${escapeHtml(sec.label)}" in this catalog yet.</div>`;
       });
       if(rest.length){
         html += `<div class="occasion-divider muted">More to explore</div>`;
-        html += rest.map(item => cardHtml(item, room)).join('');
+        html += rest.map(item => cardHtml(item, room, item.id === topPick)).join('');
       }
       return html;
     };
   } else {
     const { matching, rest, hasSplit } = splitByOccasion(filtered, room.occasion);
     ordered = hasSplit ? [...matching, ...rest] : filtered;
-    filteredKey = ordered.map(i => i.id).join(',') + (hasSplit ? '|split' : '');
+    filteredKey = ordered.map(i => i.id).join(',') + (hasSplit ? '|split' : '') + '|top:' + topPick;
     buildHtml = () => {
-      if(!hasSplit) return ordered.map(item => cardHtml(item, room)).join('');
+      if(!hasSplit) return ordered.map(item => cardHtml(item, room, item.id === topPick)).join('');
       let html = `<div class="occasion-divider">✦ Picked for ${escapeHtml(room.occasion)}</div>`;
-      html += matching.map(item => cardHtml(item, room)).join('');
+      html += matching.map(item => cardHtml(item, room, item.id === topPick)).join('');
       html += `<div class="occasion-divider muted">More to explore</div>`;
-      html += rest.map(item => cardHtml(item, room)).join('');
+      html += rest.map(item => cardHtml(item, room, item.id === topPick)).join('');
       return html;
     };
   }
@@ -826,18 +907,18 @@ function renderGrid(filtered, room){
   if(filteredKey !== lastFilteredKey || !grid.children.length){
     grid.innerHTML = buildHtml();
     cardSignatures = {};
-    ordered.forEach(item => { cardSignatures[item.id] = cardSignature(item, room); });
+    ordered.forEach(item => { cardSignatures[item.id] = cardSignature(item, room, item.id === topPick); });
     lastFilteredKey = filteredKey;
     return;
   }
 
   ordered.forEach(item => {
-    const sig = cardSignature(item, room);
+    const sig = cardSignature(item, room, item.id === topPick);
     if(cardSignatures[item.id] === sig) return;
     const existing = grid.querySelector(`[data-card="${item.id}"]`);
     if(existing){
       const wrapper = document.createElement('div');
-      wrapper.innerHTML = cardHtml(item, room).trim();
+      wrapper.innerHTML = cardHtml(item, room, item.id === topPick).trim();
       existing.replaceWith(wrapper.firstElementChild);
     }
     cardSignatures[item.id] = sig;
@@ -1130,15 +1211,30 @@ $('#chat-input').addEventListener('input', () => {
   }, 2500);
 });
 
-function renderTypingIndicator(typers) {
-  const others = typers.filter(n => n !== state.name);
+function renderTypingIndicator(typers, recorders=[]) {
+  const otherTypers = typers.filter(n => n !== state.name);
+  const otherRecorders = recorders.filter(n => n !== state.name);
   const wrap = $('#typing-indicator');
   const textEl = $('#typing-indicator-text');
-  if (!others.length) { wrap.style.display = 'none'; return; }
+
+  // Recording takes priority when both are happening -- it's the rarer,
+  // more notable signal, and in a small squad the two are unlikely to
+  // overlap anyway (hard to record and type in the same input at once).
+  if(otherRecorders.length){
+    let text;
+    if(otherRecorders.length === 1) text = `${otherRecorders[0]} is recording a voice message`;
+    else if(otherRecorders.length === 2) text = `${otherRecorders[0]} and ${otherRecorders[1]} are recording voice messages`;
+    else text = `${otherRecorders.length} people are recording voice messages`;
+    textEl.textContent = text;
+    wrap.style.display = 'flex';
+    return;
+  }
+
+  if (!otherTypers.length) { wrap.style.display = 'none'; return; }
   let text;
-  if (others.length === 1) text = `${others[0]} is typing`;
-  else if (others.length === 2) text = `${others[0]} and ${others[1]} are typing`;
-  else text = `${others.length} people are typing`;
+  if (otherTypers.length === 1) text = `${otherTypers[0]} is typing`;
+  else if (otherTypers.length === 2) text = `${otherTypers[0]} and ${otherTypers[1]} are typing`;
+  else text = `${otherTypers.length} people are typing`;
   textEl.textContent = text;
   wrap.style.display = 'flex';
 }
@@ -1505,27 +1601,33 @@ let recordingStartedAt = 0;
 const chatAudioBtn = $('#chat-audio-btn');
 
 chatAudioBtn.addEventListener('click', async () => {
+  console.log('[voice] mic button clicked. current recorder state:', mediaRecorder ? mediaRecorder.state : 'no recorder yet');
 
   // Stop the current recording.
   if(mediaRecorder && mediaRecorder.state === 'recording'){
+    console.log('[voice] calling mediaRecorder.stop()');
     mediaRecorder.stop();
     return;
   }
 
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    console.error('[voice] navigator.mediaDevices.getUserMedia is unavailable in this browser/context');
     alert('Your browser does not support microphone recording.');
     return;
   }
 
   if(!window.MediaRecorder){
+    console.error('[voice] window.MediaRecorder is unavailable in this browser');
     alert('Voice recording is not supported in this browser.');
     return;
   }
 
   try {
+    console.log('[voice] requesting microphone access...');
     const stream = await navigator.mediaDevices.getUserMedia({
       audio:true
     });
+    console.log('[voice] microphone access granted, stream tracks:', stream.getTracks().length);
 
     const mimeCandidates = [
       'audio/webm;codecs=opus',
@@ -1536,6 +1638,7 @@ chatAudioBtn.addEventListener('click', async () => {
     audioMimeType = mimeCandidates.find(type =>
       MediaRecorder.isTypeSupported(type)
     ) || '';
+    console.log('[voice] chosen mime type:', audioMimeType || '(none supported, using browser default)');
 
     mediaRecorder = audioMimeType
       ? new MediaRecorder(stream, { mimeType: audioMimeType })
@@ -1544,14 +1647,17 @@ chatAudioBtn.addEventListener('click', async () => {
     audioChunks = [];
 
     mediaRecorder.ondataavailable = (event) => {
+      console.log('[voice] ondataavailable fired, chunk size:', event.data ? event.data.size : 0);
       if(event.data && event.data.size > 0){
         audioChunks.push(event.data);
       }
     };
 
     mediaRecorder.onstart = () => {
+      console.log('[voice] recording started');
       chatAudioBtn.classList.add('recording');
       chatAudioBtn.textContent = '⏹️';
+      send('voice_recording_start');
 
       recordingStartedAt = Date.now();
 
@@ -1564,12 +1670,15 @@ chatAudioBtn.addEventListener('click', async () => {
 
         // Maximum 30 seconds.
         if(seconds >= 30){
+          console.log('[voice] hit 30s cap, auto-stopping');
           mediaRecorder.stop();
         }
       }, 500);
     };
 
     mediaRecorder.onstop = async () => {
+      console.log('[voice] onstop fired. total chunks collected:', audioChunks.length);
+      send('voice_recording_stop');
 
       clearInterval(recordingTimer);
 
@@ -1582,9 +1691,17 @@ chatAudioBtn.addEventListener('click', async () => {
       const blob = new Blob(audioChunks, {
         type: audioMimeType || 'audio/webm'
       });
+      console.log('[voice] blob created, size:', blob.size, 'bytes, type:', blob.type);
+
+      if(blob.size === 0){
+        console.error('[voice] blob is EMPTY -- no audio data was actually captured. This usually means the mic stream had no audio (muted input device, or permission granted but no real mic).');
+        alert('No audio was captured -- check your microphone is actually working and not muted.');
+        return;
+      }
 
       // Keep voice messages reasonably small for the MVP.
       if(blob.size > 1500000){
+        console.warn('[voice] blob too large:', blob.size);
         alert('Voice message is too large. Please keep it shorter.');
         return;
       }
@@ -1592,17 +1709,25 @@ chatAudioBtn.addEventListener('click', async () => {
       const reader = new FileReader();
 
       reader.onloadend = () => {
+        console.log('[voice] FileReader done, data URL length:', reader.result ? reader.result.length : 0);
+        console.log('[voice] websocket state before sending:', state.ws ? state.ws.readyState : 'no websocket at all', '(1 = OPEN, anything else means it will NOT send)');
         send('voice_chat', {
           audio: reader.result,
           mime: blob.type
         });
+        console.log('[voice] send() called for voice_chat');
+      };
+      reader.onerror = (e) => {
+        console.error('[voice] FileReader failed:', e);
       };
 
       reader.readAsDataURL(blob);
     };
 
-    mediaRecorder.onerror = () => {
+    mediaRecorder.onerror = (e) => {
+      console.error('[voice] mediaRecorder.onerror fired:', e);
       clearInterval(recordingTimer);
+      send('voice_recording_stop');
 
       chatAudioBtn.classList.remove('recording');
       chatAudioBtn.textContent = '🎙️';
@@ -1633,8 +1758,7 @@ $('#demo-tools-toggle').addEventListener('click', () => {
   panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
 });
 
-$('#demo-time-travel-fab').addEventListener('click', () => {
-  const msgEl = $('#demo-time-travel-fab-msg');
+function triggerDemoTimeTravel(msgEl){
   fetch('/api/demo/time-travel', { method: 'POST' })
     .then(r => r.json())
     .then(d => {
@@ -1648,6 +1772,12 @@ $('#demo-time-travel-fab').addEventListener('click', () => {
       msgEl.style.display = 'none';
       checkReminders();
     });
+}
+$('#demo-time-travel-fab').addEventListener('click', () => {
+  triggerDemoTimeTravel($('#demo-time-travel-fab-msg'));
+});
+$('#demo-time-travel-fab-home').addEventListener('click', () => {
+  triggerDemoTimeTravel($('#demo-time-travel-fab-msg-home'));
 });
 
 $('#roulette-btn').addEventListener('click', () => {
@@ -1807,7 +1937,7 @@ function checkReminders(){
 
       const icon = OCCASION_EMOJI[reminder.occasion] || '🎁';
       $('#reminder-modal-sub').textContent = `It's around ${new Date().toLocaleDateString('en-IN', { day:'numeric', month:'long', year:'numeric' })}`;
-      const isSelf = (reminder.recipient_relation || '').toLowerCase() === 'myself';
+      const isSelf = reminder.is_owner && (reminder.recipient_relation || '').toLowerCase() === 'myself';
       const possessive = isSelf ? 'Your' : `${reminder.person}'s`;
       const forWhom = isSelf ? 'yourself' : reminder.person;
 

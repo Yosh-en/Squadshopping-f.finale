@@ -6,7 +6,7 @@
 <title>Shop Together -- Myntra Hackathon MVP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=70">
+<link rel="stylesheet" href="/static/style.css?v=75">
 </head>
 <body>
 
@@ -29,10 +29,10 @@
     <div id="screen-home" class="screen active">
       <div class="home-location">
         📍 Deliver to <b id="home-user-name">Yoshi</b>
-        <span style="margin-left:auto;">⌄</span>
-        <button type="button" id="demo-time-travel-fab" class="demo-fab" title="Demo: fast-forward a year">🕐</button>
+        <span style="margin-left:auto;"></span>
+        <button type="button" id="demo-time-travel-fab-home" class="home-demo-btn" title="Fast-forward a finished gift squad by a year, so its reminder fires now">🕐 Demo: jump a year</button>
       </div>
-      <div id="demo-time-travel-fab-msg" class="demo-time-travel-msg home-fab-msg" style="display:none;"></div>
+      <div id="demo-time-travel-fab-msg-home" class="demo-time-travel-msg home-fab-msg" style="display:none;"></div>
 
       <div id="onboarding-modal" class="modal-overlay">
         <div class="modal-card login-modal-card">
@@ -174,6 +174,15 @@
     <div id="screen-profile" class="screen">
       <div class="profile-title-row"><h2>Profile</h2><span class="wallet-chip">₹0</span></div>
 
+      <div class="demo-tools-toggle" id="demo-tools-toggle">⚙ Demo tools</div>
+      <div class="demo-tools-panel" id="demo-tools-panel" style="display:none;">
+        <div class="demo-tools-btn-row">
+          <button id="demo-switch-name-btn" class="demo-time-travel-btn" type="button">🔄 Switch account</button>
+          <button type="button" id="demo-time-travel-fab" class="demo-time-travel-btn" title="Fast-forward a finished gift squad by a year, so its reminder fires now">🕐 Fast-forward a year</button>
+        </div>
+        <div id="demo-time-travel-fab-msg" class="demo-time-travel-msg" style="display:none;"></div>
+      </div>
+
       <div class="insider-banner">
         <div class="title"><span id="profile-user-name">Yoshi</span>! 👑</div>
         <p>Congrats! You've unlocked Extra Discounts, Rewards and Benefits.</p>
@@ -196,17 +205,20 @@
       <div class="plain-row"><div><div class="t">📦 Orders</div><div class="s">Track, return, or buy things again</div></div><span>›</span></div>
       <div class="plain-row"><div><div class="t">♡ Wishlist</div><div class="s">Your most loved styles</div></div><span>›</span></div>
       <div class="plain-row"><div><div class="t">⚙ Settings</div><div class="s">Manage notifications</div></div><span>›</span></div>
-
-      <div class="demo-tools-toggle" id="demo-tools-toggle">⚙ Demo tools</div>
-      <div class="demo-tools-panel" id="demo-tools-panel" style="display:none;">
-        <div class="demo-tools-btn-row">
-          <button id="demo-switch-name-btn" class="demo-time-travel-btn" type="button">🔄 Switch account</button>
-        </div>
-      </div>
     </div>
 
     <!-- SHOP TOGETHER LANDING -->
     <div id="screen-landing" class="screen">
+      <div id="squad-resume-banner" class="squad-resume-banner" style="display:none;">
+        <div class="squad-resume-text">
+          <span class="squad-resume-title">You've got a squad going</span>
+          <span id="squad-resume-detail" class="squad-resume-detail"></span>
+        </div>
+        <div class="squad-resume-actions">
+          <button type="button" id="squad-resume-continue-btn" class="squad-resume-continue-btn">Continue →</button>
+          <span class="squad-resume-fresh-link" id="squad-resume-fresh-link">or start fresh instead</span>
+        </div>
+      </div>
       <div class="brand-tag">MYNTRA · SHOP TOGETHER</div>
       <h1 class="hero">Swipe through outfits live, with your squad.</h1>
       <p class="hero-sub">Start a session, drop the code to your friends, and shop the same feed together -- with an AI coordinator keeping score.</p>
@@ -429,6 +441,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=70"></script>
+<script src="/static/app.js?v=77"></script>
 </body>
 </html>

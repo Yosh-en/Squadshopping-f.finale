@@ -50,6 +50,13 @@ completed_sessions_count = 0
 typing_status: Dict[str, Dict[str, float]] = {}
 TYPING_TIMEOUT_SECONDS = 4  # server-side safety net if a "stop" signal is ever missed (tab killed mid-keystroke, etc.)
 
+# Same idea as typing_status, tracked separately -- recording a voice message
+# isn't "typing," and the two need distinct UI text ("recording a voice
+# message" vs "is typing"), so they're kept as two parallel maps rather than
+# overloading one signal to mean either.
+voice_recording_status: Dict[str, Dict[str, float]] = {}
+RECORDING_TIMEOUT_SECONDS = 35  # slightly above the client's own 30s recording cap, as a safety net if "stop" is ever missed
+
 FINISHED_SQUADS_FILE = BASE_DIR / "finished_squads.json"
 
 
@@ -556,16 +563,28 @@ async def broadcast_state(room_id: str, event: dict | None = None):
 async def broadcast_typing(room_id: str):
     """Deliberately separate from broadcast_state -- this fires on every
     keystroke, so it must never trigger a full room save or re-run the AI
-    suggestion logic. It only ever sends the current list of typer names."""
+    suggestion logic. Sends both who's typing and who's recording a voice
+    message right now -- kept in the same payload (still called "typing" for
+    the message type, to avoid touching every call site) since both are
+    small, frequent, ephemeral signals that never touch disk."""
     room = rooms[room_id]
     now = time.time()
-    active = {
+
+    active_typers = {
         cid: ts for cid, ts in typing_status.get(room_id, {}).items()
         if now - ts < TYPING_TIMEOUT_SECONDS
     }
-    typing_status[room_id] = active
-    names = [room["participants"][cid] for cid in active if cid in room["participants"]]
-    await manager.broadcast(room_id, {"type": "typing", "typers": names})
+    typing_status[room_id] = active_typers
+    typer_names = [room["participants"][cid] for cid in active_typers if cid in room["participants"]]
+
+    active_recorders = {
+        cid: ts for cid, ts in voice_recording_status.get(room_id, {}).items()
+        if now - ts < RECORDING_TIMEOUT_SECONDS
+    }
+    voice_recording_status[room_id] = active_recorders
+    recorder_names = [room["participants"][cid] for cid in active_recorders if cid in room["participants"]]
+
+    await manager.broadcast(room_id, {"type": "typing", "typers": typer_names, "recorders": recorder_names})
 
 
 @app.websocket("/ws/{room_id}")
@@ -847,6 +866,30 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                 if typing_status.get(room_id, {}).pop(client_id, None) is not None:
                     await broadcast_typing(room_id)
 
+            elif action == "voice_chat":
+                audio = data.get("audio") or ""
+                mime = data.get("mime") or "audio/webm"
+                # Basic validation.
+                if (
+                    isinstance(audio, str)
+                    and audio.startswith("data:audio/")
+                    and len(audio) <= 2_000_000
+                ):
+                    await manager.broadcast(
+                        room_id,
+                        {
+                            "type": "voice_chat",
+                            "message": {
+                                "name": name,
+                                "audio": audio,
+                                "mime": mime,
+                            },
+                        },
+                    )
+                # Voice messages are intentionally transient.
+                # Do not save them into rooms_state.json.
+                continue
+
             elif action == "surprise_roulette":
                 picks = pick_surprise_items(room, CATALOG)
                 event = {
@@ -871,16 +914,28 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                 await broadcast_typing(room_id)
                 continue
 
+            elif action == "voice_recording_start":
+                voice_recording_status.setdefault(room_id, {})[client_id] = time.time()
+                await broadcast_typing(room_id)
+                continue
+
+            elif action == "voice_recording_stop":
+                voice_recording_status.get(room_id, {}).pop(client_id, None)
+                await broadcast_typing(room_id)
+                continue
+
             await broadcast_state(room_id, event=event)
 
     except (WebSocketDisconnect, RuntimeError):
         manager.disconnect(room_id, client_id)
         rooms[room_id]["members"].pop(client_id, None)
         rooms[room_id]["member_last_seen"][client_id] = time.time()
-        # A disconnecting client can't send "typing_stop" -- clear their flag
-        # here too, or their "is typing" indicator would linger for everyone
-        # else until the 4s timeout quietly expires it.
-        if typing_status.get(room_id, {}).pop(client_id, None) is not None:
+        # A disconnecting client can't send "typing_stop" or
+        # "voice_recording_stop" -- clear both here too, or their indicator
+        # would linger for everyone else until the timeout quietly expires it.
+        typing_cleared = typing_status.get(room_id, {}).pop(client_id, None) is not None
+        recording_cleared = voice_recording_status.get(room_id, {}).pop(client_id, None) is not None
+        if typing_cleared or recording_cleared:
             await broadcast_typing(room_id)
         await broadcast_state(room_id)
 
