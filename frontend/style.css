@@ -39,6 +39,22 @@ body {
   flex-direction: column;
 }
 
+/* On an actual phone, this fake "phone frame" mockup used to sit inside a
+   fixed 800px box while the real screen was often shorter -- meaning the
+   outer page and the inner app each had their own independent scroll area.
+   Focusing an input (like the chat box) made the phone's browser
+   auto-scroll the OUTER page to bring it into view, which left the app's
+   own inner scrolling stuck until whatever was focused closed. Below this
+   width, drop the mockup bezel entirely and let the app fill the real
+   screen 1:1 -- one scroll context, not two. */
+@media (max-width: 480px){
+  body{ padding:0; min-height:100vh; min-height:100dvh; }
+  .phone{
+    width:100%; height:100vh; height:100dvh; border-radius:0; box-shadow:none;
+  }
+  .notch{ display:none; }
+}
+
 .notch {
   position: absolute;
   top: 0;
@@ -1186,24 +1202,40 @@ input:focus {
   display: block;
 }
 
-.chat-drawer {
+/* A real overlay now, matching every other modal in the app (login,
+   roulette, reminder, tie-explainer) -- closed means completely gone
+   (opacity 0, pointer-events none), open means it takes over with a
+   dimmed backdrop. Replaces the old partial bottom drawer, which had a
+   real problem: depending on where the underlying screen happened to be
+   scrolled, the drawer could overlap content differently for different
+   people, with no consistent way to dismiss it by tapping outside. */
+.chat-overlay {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 62%;
+  inset: 0;
+  background: rgba(20,20,30,0.55);
+  z-index: 36;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s;
+}
+
+.chat-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-modal-card {
+  width: 100%;
+  max-width: 390px;
+  height: 78%;
   background: var(--surface);
   border-radius: 18px 18px 0 0;
   box-shadow: 0 -10px 30px -10px rgba(0, 0, 0, 0.35);
-  z-index: 36;
   display: flex;
   flex-direction: column;
-  transform: translateY(100%);
-  transition: transform .28s ease;
-}
-
-.chat-drawer.open {
-  transform: translateY(0);
 }
 
 .chat-drawer-header {
@@ -1929,6 +1961,15 @@ input:focus {
   }
 }
 
+/* Acknowledges a single slot reaching consensus without touching the
+   modal or any other slot -- the squad might still be deciding on the rest. */
+.roulette-slot.just-added{ animation:rouletteJustAdded 0.6s ease-out; }
+@keyframes rouletteJustAdded{
+  0%{ box-shadow:0 0 0 0 rgba(20,167,108,0.6); }
+  60%{ box-shadow:0 0 0 8px rgba(20,167,108,0); }
+  100%{ box-shadow:0 0 0 0 rgba(20,167,108,0); }
+}
+
 .roulette-slot-media{
   width:100%;
   height:90px;
@@ -2558,6 +2599,9 @@ input:focus {
   padding: 18px 16px 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 8;
 }
 
 .checkout-top-row {
@@ -2898,4 +2942,64 @@ input:focus {
   font-size: 12px;
   font-weight: 600;
   color: #9A5B00;
+  cursor: pointer;
+  line-height: 1.5;
 }
+
+.outfit-gap-link{ color:var(--pink-dark); font-weight:800; white-space:nowrap; }
+
+.checkout-reservation-banner{
+  margin:14px 16px 0; background:linear-gradient(120deg,#FFF3E0,#FFEACC); border:1px solid #FFD9A0;
+  border-radius:10px; padding:11px 14px; font-size:12px; font-weight:600; color:#9A5B00; line-height:1.45;
+}
+
+.split-mode-toggle{ display:flex; background:var(--canvas); border-radius:10px; padding:3px; gap:3px; margin:0 16px 10px; }
+.split-mode-btn{ flex:1; padding:8px 0; text-align:center; border:none; background:transparent; border-radius:8px; font-weight:700; font-size:11.5px; color:var(--muted); cursor:pointer; }
+.split-mode-btn.active{ background:#fff; color:var(--ink); box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+
+.custom-split-rows{ margin:0 16px 4px; }
+.custom-split-row{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:9px 0; border-bottom:1px solid var(--border);
+}
+.custom-split-row-name{ font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:8px; }
+.custom-split-amount-input{
+  width:88px; padding:7px 9px; border:1.5px solid var(--border); border-radius:8px; font-size:12.5px;
+  font-weight:700; text-align:right;
+}
+.custom-split-amount-cell{ display:flex; align-items:center; gap:8px; }
+.custom-split-reset-link{ font-size:10px; font-weight:700; color:var(--pink); cursor:pointer; text-decoration:underline; white-space:nowrap; }
+.custom-split-amount-readonly{ font-size:12.5px; font-weight:700; color:var(--muted); padding:7px 2px; }
+.custom-split-auto-tag{ font-size:9.5px; font-weight:600; color:var(--muted); font-style:italic; }
+
+.split-allocation-row{
+  margin:8px 16px 12px; display:flex; align-items:center; justify-content:space-between;
+  font-size:11.5px; font-weight:700; padding:9px 12px; border-radius:8px;
+}
+.split-allocation-row.balanced{ background:#E4F7EE; color:#0E6B3F; }
+.split-allocation-row.unbalanced{ background:#FFF3E0; color:#9A5B00; }
+
+/* ---------- login (mirrors the real Myntra login screen) ---------- */
+.login-logo-wrap{ display:flex; justify-content:center; margin-bottom:14px; }
+.login-logo-big{ width:56px; height:56px; border-radius:16px; font-size:26px; }
+.login-title-center{ text-align:center; margin-bottom:22px; }
+
+.login-icon-input-row{
+  display:flex; align-items:center; gap:10px; border:1.5px solid var(--border); border-radius:8px;
+  padding:12px 14px; margin-bottom:14px;
+}
+.login-icon-input-row .login-input-icon{ font-size:14px; color:var(--muted); flex-shrink:0; }
+.login-icon-input-row input{ border:none; padding:0; font-size:14px; flex:1; min-width:0; }
+.login-icon-input-row input:focus{ outline:none; }
+
+.login-options-row{
+  display:flex; align-items:center; justify-content:space-between; margin:2px 0 18px; font-size:11.5px;
+}
+.login-remember-label{ display:flex; align-items:center; gap:6px; color:var(--muted); font-weight:600; cursor:pointer; }
+.login-remember-label input[type="checkbox"]{ width:14px; height:14px; padding:0; margin:0; accent-color:var(--pink); }
+.login-forgot-link{ font-size:11.5px; }
+.login-link{ cursor:pointer; }
+.login-signup-row{ font-size:12.5px; color:var(--muted); text-align:center; margin:16px 0 0; }
+
+.recipient-name-label{ margin-top:12px !important; }
+.reminder-archive-link{ color:#B5453E; font-size:11px; text-decoration:underline; margin-top:4px; }

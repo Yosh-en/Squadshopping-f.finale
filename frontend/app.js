@@ -17,6 +17,10 @@ const state = {
   rouletteItemIds: null, rouletteLanded: false, pendingTieItemId: null, demoFabMsgTimer: null,
   knownCartIds: new Set(), hasInitializedCart: false,
   typingDebounceTimer: null, isCurrentlyTypingSignal: false,
+  feedScores: {},
+  jumpToTieOnChatClose: false,
+  reopenRouletteAfterTie: false,
+  roulettePulsedCartIds: new Set(),
 };
 const $ = s => document.querySelector(s);
 const $all = s => document.querySelectorAll(s);
@@ -65,6 +69,16 @@ function getStoredUserName(){
 function setStoredUserName(name){
   try { sessionStorage.setItem('squadUserName', name); } catch(e){}
 }
+function getStoredUserEmail(){
+  try { return sessionStorage.getItem('squadUserEmail') || ''; }
+  catch(e){ return ''; }
+}
+function setStoredUserEmail(email){
+  try { sessionStorage.setItem('squadUserEmail', email); } catch(e){}
+}
+function clearStoredIdentity(){
+  try { sessionStorage.removeItem('squadUserEmail'); sessionStorage.removeItem('squadUserName'); } catch(e){}
+}
 
 function applyUserNameToUI(name){
   const initial = (name || '?').slice(0, 1).toUpperCase();
@@ -78,42 +92,101 @@ function applyUserNameToUI(name){
   setText('join-starting-as-name', name);
 }
 
-function showOnboardingMobileStep(){
-  $('#onboarding-step-mobile').style.display = 'block';
-  $('#onboarding-step-name').style.display = 'none';
+function showOnboardingLoginStep(){
+  $('#onboarding-step-login').style.display = 'block';
+  $('#onboarding-step-signup').style.display = 'none';
+  $('#onboarding-login-error').textContent = '';
   $('#onboarding-modal').classList.add('show');
 }
-function showOnboardingNameStep(){
-  $('#onboarding-step-mobile').style.display = 'none';
-  $('#onboarding-step-name').style.display = 'block';
+function showOnboardingSignupStep(email){
+  $('#onboarding-step-login').style.display = 'none';
+  $('#onboarding-step-signup').style.display = 'block';
+  $('#onboarding-signup-email-note').textContent = `Creating an account for ${email}`;
   $('#onboarding-modal').classList.add('show');
 }
 function closeOnboarding(){ $('#onboarding-modal').classList.remove('show'); }
 
 (function initUserName(){
-  const existing = getStoredUserName();
-  if(existing) applyUserNameToUI(existing);
-  else showOnboardingMobileStep();
+  const existingEmail = getStoredUserEmail();
+  const existingName = getStoredUserName();
+  if(existingEmail && existingName) applyUserNameToUI(existingName);
+  else showOnboardingLoginStep();
 })();
 
-$('#onboarding-mobile-continue').addEventListener('click', () => {
-  const mobile = $('#onboarding-mobile').value.trim();
-  if(!mobile) return;
-  showOnboardingNameStep();
-});
-
-$('#onboarding-name-form').addEventListener('submit', (e) => {
+// "Login" only ever checks whether this email has an account -- it never
+// checks the password field. There's no real backend auth in this build,
+// so pretending to verify a password would be a false promise, not a real
+// safeguard. The field stays visually (it's what makes this read as a real
+// login rather than a magic-link gimmick).
+$('#onboarding-login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const name = $('#onboarding-name').value.trim();
-  if(!name) return;
-  setStoredUserName(name);
-  applyUserNameToUI(name);
-  closeOnboarding();
+  const email = $('#onboarding-email').value.trim().toLowerCase();
+  const errorEl = $('#onboarding-login-error');
+  errorEl.textContent = '';
+  if(!email) return;
+
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if(data.known){
+      setStoredUserEmail(email);
+      setStoredUserName(data.name);
+      applyUserNameToUI(data.name);
+      closeOnboarding();
+      checkReminders();
+    } else {
+      errorEl.textContent = "No account with this email yet -- tap Sign up below.";
+    }
+  } catch(err){
+    errorEl.textContent = "Couldn't reach the server -- check it's running and try again.";
+  }
 });
 
+$('#onboarding-goto-signup').addEventListener('click', () => {
+  const email = $('#onboarding-email').value.trim().toLowerCase();
+  if(!email){
+    $('#onboarding-login-error').textContent = "Enter an email above first, then tap Sign up.";
+    return;
+  }
+  showOnboardingSignupStep(email);
+});
+
+$('#onboarding-back-to-login').addEventListener('click', () => {
+  showOnboardingLoginStep();
+});
+
+$('#onboarding-signup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = $('#onboarding-email').value.trim().toLowerCase();
+  const name = $('#onboarding-signup-name').value.trim();
+  if(!email || !name) return;
+
+  const res = await fetch('/api/signup', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ email, name })
+  });
+  const data = await res.json();
+  if(data.ok){
+    setStoredUserEmail(email);
+    setStoredUserName(name);
+    applyUserNameToUI(name);
+    closeOnboarding();
+  } else {
+    showOnboardingLoginStep();
+  }
+});
+
+// "Switch account" in Profile's Demo Tools -- clears local identity only
+// (the account and its taste profile stay intact server-side) and re-shows
+// login so a different email can sign in on this same tab.
 $('#demo-switch-name-btn').addEventListener('click', () => {
-  $('#onboarding-name').value = getStoredUserName();
-  showOnboardingNameStep();
+  clearStoredIdentity();
+  $('#onboarding-email').value = '';
+  $('#onboarding-password').value = '';
+  showOnboardingLoginStep();
 });
 
 $all('.tab-btn').forEach(btn => btn.addEventListener('click', () => {
@@ -138,14 +211,10 @@ $all('.preset-chip').forEach(btn => btn.addEventListener('click', () => {
 }));
 
 $all('.recipient-chip').forEach(btn => btn.addEventListener('click', () => {
-  $('#create-recipient').value = btn.dataset.recipient;
+  $('#create-recipient-relation').value = btn.dataset.recipient;
   $all('.recipient-chip').forEach(c => c.classList.remove('active'));
   btn.classList.add('active');
 }));
-$('#create-recipient').addEventListener('input', () => {
-  const val = $('#create-recipient').value;
-  $all('.recipient-chip').forEach(c => c.classList.toggle('active', c.dataset.recipient === val));
-});
 
 $('#create-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -154,11 +223,18 @@ $('#create-form').addEventListener('submit', async (e) => {
   const when = $('#create-when').value;
   const budget = parseInt($('#create-budget').value) || 0;
   const itinerary = $('#create-itinerary').value.split(',').map(s => s.trim()).filter(Boolean);
-  const giftRecipient = $('#create-recipient').value.trim() || document.getElementById('screen-landing').dataset.giftRecipient || '';
+  const giftRecipientRelation = $('#create-recipient-relation').value.trim();
+  const giftRecipientName = $('#create-recipient-name').value.trim();
   if(!name) return;
-  const res = await fetch('/api/rooms', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({occasion, budget, when, itinerary, gift_recipient: giftRecipient})});
+  const res = await fetch('/api/rooms', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      occasion, budget, when, itinerary,
+      gift_recipient_relation: giftRecipientRelation,
+      gift_recipient_name: giftRecipientName,
+    })
+  });
   const data = await res.json();
-  delete document.getElementById('screen-landing').dataset.giftRecipient;
   enterRoom(data.room_id, name);
 });
 
@@ -195,8 +271,17 @@ function resetPerRoomState(){
   state.hasInitializedCart = false;
   state.lastChatCount = 0;
   state.voiceMessages = [];
+  state.feedScores = {};
+  state.jumpToTieOnChatClose = false;
+  state.reopenRouletteAfterTie = false;
+  if(reservationTickInterval){ clearInterval(reservationTickInterval); reservationTickInterval = null; }
+  toastQueue = [];
+  toastCurrentlyShowing = false;
+  clearTimeout(toastTimer);
+  $('#event-toast').classList.remove('show');
   state.rouletteItemIds = null;
   state.rouletteLanded = false;
+  state.roulettePulsedCartIds = new Set();
   state.pendingTieItemId = null;
   cardSignatures = {};
   lastFilteredKey = null;
@@ -246,7 +331,8 @@ function enterRoom(roomId, name){
   showScreen('screen-room');
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws/${roomId}?name=${encodeURIComponent(name)}&client_id=${state.clientId}`);
+  const email = getStoredUserEmail();
+  const ws = new WebSocket(`${proto}://${location.host}/ws/${roomId}?name=${encodeURIComponent(name)}&client_id=${state.clientId}&email=${encodeURIComponent(email)}`);
   ws.onopen = () => {
     if(state.preLikeItemId){
       ws.send(JSON.stringify({ action: 'react', item_id: state.preLikeItemId, reaction: 'like' }));
@@ -258,12 +344,14 @@ function enterRoom(roomId, name){
     if(msg.type === 'state'){
       state.room = msg.room;
       state.aiNote = msg.ai_note;
+      state.feedScores = msg.feed_scores || {};
       render();
       if(msg.event){
         if(msg.event.roulette_item_ids !== undefined){
           showRouletteReveal(msg.event.roulette_item_ids, msg.event.name);
         } else if(msg.event.name !== state.name){
-          showEventToast(msg.event);
+          enqueueEventToast(msg.event);
+          if(msg.event.item_id) highlightCardIfVisible(msg.event.item_id);
         }
       }
     } else if (msg.type === 'catchup') {
@@ -284,7 +372,11 @@ function enterRoom(roomId, name){
   };
   state.ws = ws;
 
-  fetch('/api/rooms/' + roomId).then(r=>r.json()).then(d => { state.catalog = d.catalog; render(); });
+  fetch('/api/rooms/' + roomId).then(r=>r.json()).then(d => {
+    state.catalog = d.catalog;
+    state.feedScores = d.feed_scores || {};
+    render();
+  });
 }
 
 // ---- Product media (image or emoji fallback) ------------------------------
@@ -383,6 +475,20 @@ function refreshRouletteSlots(){
   items.forEach((item, i) => {
     if(slots[i]) slots[i].innerHTML = rouletteSlotContent(item, state.room);
   });
+
+  // A brief pulse on whichever slot just reached consensus -- acknowledges
+  // it without touching the modal or any other still-undecided slot. The
+  // squad might still be deciding on the rest, so nothing here closes
+  // anything; that stays a manual "Done" tap.
+  state.rouletteItemIds.forEach((id, i) => {
+    if(!state.room.cart.includes(id) || state.roulettePulsedCartIds.has(id)) return;
+    state.roulettePulsedCartIds.add(id);
+    const slot = slots[i];
+    if(!slot) return;
+    slot.classList.remove('just-added');
+    requestAnimationFrame(() => slot.classList.add('just-added'));
+    setTimeout(() => slot.classList.remove('just-added'), 700);
+  });
 }
 
 function send(action, payload={}){
@@ -393,7 +499,41 @@ function breakTie(itemId){ send('break_tie', {item_id: itemId}); }
 function toggleFinalize(){ send('finalize'); }
 
 let toastTimer = null;
-function showEventToast(event){
+let toastQueue = [];
+let toastCurrentlyShowing = false;
+const TOAST_QUEUE_CAP = 5;
+
+function highlightCardIfVisible(itemId){
+  const card = document.querySelector(`[data-card="${itemId}"]`);
+  if(!card) return;
+  const grid = $('#product-grid');
+  if(!grid) return;
+  const cardRect = card.getBoundingClientRect();
+  const gridRect = grid.getBoundingClientRect();
+  const isVisible = cardRect.bottom > gridRect.top && cardRect.top < gridRect.bottom;
+  if(!isVisible) return;
+  card.classList.remove('just-highlighted');
+  requestAnimationFrame(() => card.classList.add('just-highlighted'));
+  setTimeout(() => card.classList.remove('just-highlighted'), 1600);
+}
+
+function enqueueEventToast(event){
+  toastQueue.push(event);
+  if(toastQueue.length > TOAST_QUEUE_CAP) toastQueue.shift();
+  advanceToastQueue();
+}
+
+function advanceToastQueue(){
+  if(toastCurrentlyShowing || !toastQueue.length) return;
+  toastCurrentlyShowing = true;
+  const event = toastQueue.shift();
+  showEventToast(event, () => {
+    toastCurrentlyShowing = false;
+    advanceToastQueue();
+  });
+}
+
+function showEventToast(event, onDone){
   const el = $('#event-toast');
   let text;
   if(event.verb === 'broke the tie on'){
@@ -420,18 +560,29 @@ function showEventToast(event){
   el.textContent = text;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), event.item_id ? 7000 : 3200);
+  el._toastDone = onDone || null;
+  toastTimer = setTimeout(() => dismissCurrentToast(), event.item_id ? 6500 : 4000);
+}
+
+function dismissCurrentToast(){
+  const el = $('#event-toast');
+  el.classList.remove('show');
+  clearTimeout(toastTimer);
+  const done = el._toastDone;
+  el._toastDone = null;
+  if(done) setTimeout(done, 260);
 }
 
 $('#event-toast').addEventListener('click', (e) => {
   const itemId = e.currentTarget.dataset.jumpItem;
-  if(!itemId) return;
+  if(!itemId){ dismissCurrentToast(); return; }
   const card = document.querySelector(`[data-card="${itemId}"]`);
-  if(!card) return;
-  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  card.classList.add('just-highlighted');
-  setTimeout(() => card.classList.remove('just-highlighted'), 1600);
-  e.currentTarget.classList.remove('show');
+  if(card){
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('just-highlighted');
+    setTimeout(() => card.classList.remove('just-highlighted'), 1600);
+  }
+  dismissCurrentToast();
 });
 
 function showCatchupBanner(catchup){
@@ -556,11 +707,15 @@ const OCCASION_TAGS = {
   'Monsoon Errands': ['monsoon', 'solid'],
 };
 
+function byFeedScore(a, b){
+  return (state.feedScores[b.id] ?? 0) - (state.feedScores[a.id] ?? 0);
+}
+
 function splitByOccasion(items, occasion){
   const tags = OCCASION_TAGS[occasion];
-  if(!tags) return { matching: [], rest: items, hasSplit: false };
-  const matching = items.filter(i => tags.includes(i.tag));
-  const rest = items.filter(i => !tags.includes(i.tag));
+  if(!tags) return { matching: [], rest: [...items].sort(byFeedScore), hasSplit: false };
+  const matching = items.filter(i => tags.includes(i.tag)).sort(byFeedScore);
+  const rest = items.filter(i => !tags.includes(i.tag)).sort(byFeedScore);
   return { matching, rest, hasSplit: matching.length > 0 && rest.length > 0 };
 }
 
@@ -594,8 +749,7 @@ function seasonTagsFor(whenIso){
   return INDIA_SEASON_TAGS[d.getMonth() + 1] || [];
 }
 
-function buildItinerarySections(items, itinerary, whenIso){
-  const seasonTags = seasonTagsFor(whenIso);
+function buildItinerarySections(items, itinerary){
   const usedIds = new Set();
   const MIN_SECTION_SIZE = 2;
   const sections = itinerary.map(fn => {
@@ -605,11 +759,11 @@ function buildItinerarySections(items, itinerary, whenIso){
     if(matches.length < MIN_SECTION_SIZE){
       matches = items.filter(i => tags.includes(i.tag));
     }
-    matches.sort((a, b) => (seasonTags.includes(a.tag) ? 0 : 1) - (seasonTags.includes(b.tag) ? 0 : 1));
+    matches.sort(byFeedScore);
     matches.forEach(m => usedIds.add(m.id));
     return { label: fn, items: matches };
   });
-  const rest = items.filter(i => !usedIds.has(i.id));
+  const rest = items.filter(i => !usedIds.has(i.id)).sort(byFeedScore);
   return { sections, rest };
 }
 
@@ -631,7 +785,7 @@ function renderGrid(filtered, room){
   let ordered, filteredKey, buildHtml;
 
   if(itinerary.length){
-    const { sections, rest } = buildItinerarySections(filtered, itinerary, room.when);
+    const { sections, rest } = buildItinerarySections(filtered, itinerary);
     ordered = [...sections.flatMap(s => s.items), ...rest];
     filteredKey = ordered.map(i => i.id).join(',') + '|itin:' + itinerary.join('>');
     buildHtml = () => {
@@ -744,6 +898,18 @@ function detectConsensusCelebrations(room){
   });
 }
 
+// Mirrors backend's gift_recipient_display() -- name wins when given (more
+// specific), relation is the fallback for a quick gift with no name typed.
+function giftRecipientDisplay(room){
+  const name = (room.gift_recipient_name || '').trim();
+  const relation = (room.gift_recipient_relation || '').trim();
+  return name || relation;
+}
+function isGiftRoom(room){
+  const relation = (room.gift_recipient_relation || '').trim().toLowerCase();
+  return relation && relation !== 'myself';
+}
+
 function render(){
   if(!state.room || !state.catalog.length) return;
   const room = state.room;
@@ -752,8 +918,8 @@ function render(){
   $('#room-occasion').textContent = room.occasion;
   $('#room-when').textContent = room.when ? ('📅 ' + formatWhen(room.when)) : '';
   const giftNote = $('#room-gift-note');
-  if(room.gift_recipient && room.gift_recipient.toLowerCase() !== 'myself'){
-    giftNote.textContent = `🎁 Surprise for ${room.gift_recipient} -- keep this one on the down-low`;
+  if(isGiftRoom(room)){
+    giftNote.textContent = `🎁 Surprise for ${giftRecipientDisplay(room)} -- keep this one on the down-low`;
     giftNote.style.display = 'block';
   } else {
     giftNote.style.display = 'none';
@@ -818,12 +984,34 @@ function needsMyAttention(item, room){
   return !(state.clientId in votes);
 }
 
+function hideRouletteModalForTie(){
+  $('#roulette-modal').classList.remove('show');
+}
+function reopenRouletteModal(){
+  if(!state.rouletteItemIds || !state.rouletteLanded) return;
+  $('#roulette-modal').classList.add('show');
+  refreshRouletteSlots();
+}
+
+function jumpToItemCard(itemId){
+  if(!itemId) return;
+  showScreen('screen-room');
+  const card = document.querySelector(`[data-card="${itemId}"]`);
+  if(!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.add('just-highlighted');
+  setTimeout(() => card.classList.remove('just-highlighted'), 1600);
+}
+
 function announceTie(itemId){
   state.pendingTieItemId = itemId;
+  state.jumpToTieOnChatClose = true;
 
-  if($('#roulette-modal').classList.contains('show')){
-    closeRouletteModal();
+  const rouletteWasOpen = $('#roulette-modal').classList.contains('show');
+  if(rouletteWasOpen){
+    hideRouletteModalForTie();
   }
+  state.reopenRouletteAfterTie = rouletteWasOpen && !!state.rouletteItemIds;
 
   if(!state.tieExplainerShown){
     $('#tie-explainer').classList.add('show');
@@ -839,15 +1027,7 @@ function announceTie(itemId){
 
 $('#chat-context-note').addEventListener('click', (e) => {
   if(!e.target.closest('#chat-jump-to-tie')) return;
-  const itemId = state.pendingTieItemId;
   closeChatDrawer();
-  if(!itemId) return;
-  showScreen('screen-room');
-  const card = document.querySelector(`[data-card="${itemId}"]`);
-  if(!card) return;
-  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  card.classList.add('just-highlighted');
-  setTimeout(() => card.classList.remove('just-highlighted'), 1600);
 });
 
 function detectNewTies(room){
@@ -875,7 +1055,19 @@ function openChatDrawer(){
 function closeChatDrawer(){
   state.chatOpen = false;
   $('#chat-drawer').classList.remove('open');
+  if(state.jumpToTieOnChatClose){
+    state.jumpToTieOnChatClose = false;
+    if(state.reopenRouletteAfterTie){
+      state.reopenRouletteAfterTie = false;
+      reopenRouletteModal();
+    } else {
+      jumpToItemCard(state.pendingTieItemId);
+    }
+  }
 }
+$('#chat-drawer').addEventListener('click', (e) => {
+  if(e.target.id === 'chat-drawer') closeChatDrawer();
+});
 
 function renderChat(room) {
   const messages = room.chat || [];
@@ -955,12 +1147,43 @@ function assignItem(itemId, buyerId) { send('assign', { item_id: itemId, buyer_i
 function tagOccasion(itemId, tag) { send('tag_occasion', { item_id: itemId, tag }); }
 function removeItem(itemId) { send('remove_item', { item_id: itemId }); }
 function payShare() { send('pay_share'); }
+function setSplitMode(mode){ send('set_split_mode', {mode}); }
+function setCustomAmount(amount){ send('set_custom_amount', {amount}); }
+function resetCustomAmount(){ send('clear_custom_amount'); }
+
+let reservationTickInterval = null;
+function updateReservationBanner(room){
+  const el = $('#checkout-reservation-banner');
+  if(!el) return;
+
+  const stillPending = room.checkout_expires_at && room.session_number == null;
+  if(!stillPending){
+    el.style.display = 'none';
+    if(reservationTickInterval){ clearInterval(reservationTickInterval); reservationTickInterval = null; }
+    return;
+  }
+
+  el.style.display = 'block';
+  const tick = () => {
+    const secsLeft = Math.max(0, Math.round(room.checkout_expires_at - (Date.now() / 1000)));
+    const mm = Math.floor(secsLeft / 60), ss = secsLeft % 60;
+    el.textContent = secsLeft > 0
+      ? `⏳ ${mm}:${String(ss).padStart(2,'0')} left to finish paying -- after that, unpaid items release and any payments made so far refund automatically.`
+      : `⏳ Wrapping up...`;
+  };
+  tick();
+  if(!reservationTickInterval){
+    reservationTickInterval = setInterval(tick, 1000);
+  }
+}
 
 function renderCheckout(cartItems, room) {
   const itemsEl = $('#checkout-items');
   const peopleEl = $('#checkout-people');
   const statusEl = $('#checkout-status');
   if (!itemsEl) return;
+
+  updateReservationBanner(room);
 
   $('#checkout-occasion').textContent = room.occasion;
 
@@ -970,6 +1193,8 @@ function renderCheckout(cartItems, room) {
     statusEl.innerHTML = '';
     const oldNote = document.getElementById('gift-split-note');
     if (oldNote) oldNote.remove();
+    const oldControls = document.getElementById('gift-split-controls');
+    if (oldControls) oldControls.remove();
     return;
   }
 
@@ -983,9 +1208,18 @@ function renderCheckout(cartItems, room) {
   const memberIds = Object.keys(members);
   const total = cartItems.reduce((s, i) => s + i.price, 0);
 
-  const recipient = (room.gift_recipient || '').trim();
-  const isGiftSplit = recipient && recipient.toLowerCase() !== 'myself' && memberIds.length > 1;
+  const isGiftSplit = isGiftRoom(room) && memberIds.length > 1;
+  const splitMode = room.gift_split_mode || 'even';
+  const manualSplit = room.gift_split_manual || {};
+  const resolvedSplit = room.gift_split_resolved || {};
   const equalShare = isGiftSplit ? Math.round(total / memberIds.length) : 0;
+
+  const personAmount = (cid) => isGiftSplit
+    ? (splitMode === 'custom' ? (resolvedSplit[cid] ?? 0) : equalShare)
+    : 0;
+  const isManualAmount = (cid) => Object.prototype.hasOwnProperty.call(manualSplit, cid);
+  const allocatedTotal = isGiftSplit ? memberIds.reduce((s, cid) => s + personAmount(cid), 0) : 0;
+  const splitIsBalanced = splitMode === 'even' || !!room.gift_split_balanced;
 
   const buyerIds = isGiftSplit ? memberIds : [...new Set(Object.values(assignments))];
   const allPaid = buyerIds.length > 0 && buyerIds.every(id => payments[id]);
@@ -1037,15 +1271,73 @@ function renderCheckout(cartItems, room) {
 
   const unassignedCount = cartItems.filter(i => !assignments[i.id]).length;
 
-  let giftNoteEl = document.getElementById('gift-split-note');
+  const oldGiftNote = document.getElementById('gift-split-note');
+  if (oldGiftNote) oldGiftNote.remove();
+  let controlsEl = document.getElementById('gift-split-controls');
   if(isGiftSplit){
-    if(!giftNoteEl){
-      peopleEl.insertAdjacentHTML('beforebegin', `<div id="gift-split-note" class="gift-split-note"></div>`);
-      giftNoteEl = document.getElementById('gift-split-note');
+    if(!controlsEl){
+      peopleEl.insertAdjacentHTML('beforebegin', `<div id="gift-split-controls"></div>`);
+      controlsEl = document.getElementById('gift-split-controls');
     }
-    giftNoteEl.textContent = `🎁 Splitting this gift ${memberIds.length} ways -- ₹${equalShare} each, no matter who's assigned what.`;
-  } else if(giftNoteEl){
-    giftNoteEl.remove();
+
+    const focusedInput = document.activeElement && document.activeElement.matches('[data-custom-amount-input]')
+      ? document.activeElement : null;
+
+    if(!focusedInput){
+      const toggleHtml = `
+        <div class="split-mode-toggle">
+          <button type="button" class="split-mode-btn ${splitMode === 'even' ? 'active' : ''}" data-split-mode="even">Split evenly</button>
+          <button type="button" class="split-mode-btn ${splitMode === 'custom' ? 'active' : ''}" data-split-mode="custom">Custom split</button>
+        </div>`;
+
+      let bodyHtml;
+      if(splitMode === 'custom'){
+        const rows = Object.entries(members).map(([cid, n]) => {
+          const isMe = cid === state.clientId;
+          const amount = personAmount(cid);
+          const isManual = isManualAmount(cid);
+          let amountHtml;
+          if(isMe){
+            amountHtml = `
+              <div class="custom-split-amount-cell">
+                <input type="number" min="0" step="1" class="custom-split-amount-input" data-custom-amount-input value="${amount}" />
+                ${isManual ? `<span class="custom-split-reset-link" data-reset-custom-amount>auto</span>` : ''}
+              </div>`;
+          } else {
+            amountHtml = `<span class="custom-split-amount-readonly" data-readonly-amount-for="${cid}">₹${amount}${isManual ? '' : ' <span class="custom-split-auto-tag">(auto)</span>'}</span>`;
+          }
+          return `
+            <div class="custom-split-row">
+              <div class="custom-split-row-name">${avatarHtml(cid, n, 'inline-avatar')}${escapeHtml(n)}${isMe ? ' (you)' : ''}</div>
+              ${amountHtml}
+            </div>`;
+        }).join('');
+        bodyHtml = `
+          <div class="custom-split-rows">${rows}</div>
+          <div class="split-allocation-row ${splitIsBalanced ? 'balanced' : 'unbalanced'}">
+            <span>${splitIsBalanced ? '✓ Allocated' : '⚠ Allocated'}</span>
+            <span>₹${allocatedTotal} of ₹${total}</span>
+          </div>`;
+      } else {
+        bodyHtml = `<div class="gift-split-note" id="gift-split-note">🎁 Splitting this gift ${memberIds.length} ways -- ₹${equalShare} each, no matter who's assigned what.</div>`;
+      }
+      controlsEl.innerHTML = toggleHtml + bodyHtml;
+    } else {
+      const allocRow = controlsEl.querySelector('.split-allocation-row');
+      if(allocRow){
+        allocRow.className = `split-allocation-row ${splitIsBalanced ? 'balanced' : 'unbalanced'}`;
+        allocRow.innerHTML = `
+          <span>${splitIsBalanced ? '✓ Allocated' : '⚠ Allocated'}</span>
+          <span>₹${allocatedTotal} of ₹${total}</span>`;
+      }
+      controlsEl.querySelectorAll('[data-readonly-amount-for]').forEach(span => {
+        const cid = span.dataset.readonlyAmountFor;
+        const isManual = isManualAmount(cid);
+        span.innerHTML = `₹${personAmount(cid)}${isManual ? '' : ' <span class="custom-split-auto-tag">(auto)</span>'}`;
+      });
+    }
+  } else if(controlsEl){
+    controlsEl.remove();
   }
 
   peopleEl.innerHTML = Object.entries(members).map(([cid, n]) => {
@@ -1054,7 +1346,7 @@ function renderCheckout(cartItems, room) {
 
     let myTotal, hasStake;
     if(isGiftSplit){
-      myTotal = equalShare;
+      myTotal = personAmount(cid);
       hasStake = true;
     } else {
       const myItems = cartItems.filter(i => assignments[i.id] === cid);
@@ -1067,6 +1359,10 @@ function renderCheckout(cartItems, room) {
       action = `<span class="pay-status muted">No items assigned</span>`;
     } else if(hasPaid){
       action = `<span class="pay-status paid">✓ Paid ₹${myTotal}</span>`;
+    } else if(isGiftSplit && !splitIsBalanced){
+      action = isMe
+        ? `<span class="pay-status muted">Split doesn't add up yet</span>`
+        : `<span class="pay-status muted">Waiting on the split</span>`;
     } else if(isMe){
       action = `<button class="pay-btn" data-pay="1">Pay my share -- ₹${myTotal}</button>`;
     } else {
@@ -1089,10 +1385,13 @@ function renderCheckout(cartItems, room) {
       <div class="squad-score-badge">🏆 Squad Session #${room.session_number ?? '?'} with this crew</div>
       <button type="button" id="start-new-squad-btn" class="start-new-squad-btn">+ Start a new squad</button>
     `;
+  } else if(isGiftSplit && !splitIsBalanced){
+    statusEl.className = 'checkout-status warn';
+    statusEl.textContent = `The custom split needs to add up to ₹${total} before anyone can pay -- currently at ₹${allocatedTotal}.`;
   } else {
     statusEl.className = 'checkout-status';
     statusEl.textContent = isGiftSplit
-      ? `Splitting this gift ${memberIds.length} ways -- once everyone's paid their equal share, the order's complete.`
+      ? `Splitting this gift ${memberIds.length} ways -- once everyone's paid their share, the order's complete.`
       : `Once everyone above has paid their own share, the order's complete -- no one has to front money for anyone else.`;
   }
 
@@ -1143,8 +1442,19 @@ function renderOutfitGapNudge(cartItems, room){
   if(!hasAccessory) missing.push('accessories');
   if(!missing.length){ el.style.display = 'none'; return; }
   el.style.display = 'block';
-  el.innerHTML = `👟 Your ${escapeHtml(room.occasion)} look is missing ${missing.join(' and ')} -- want to browse those next?`;
+  el.dataset.jumpSearch = missing[0];
+  el.innerHTML = `👟 Your ${escapeHtml(room.occasion)} look is missing ${missing.join(' and ')} -- want to browse those next? <span class="outfit-gap-link">Browse ${escapeHtml(missing[0])} →</span>`;
 }
+
+$('#outfit-gap-nudge').addEventListener('click', (e) => {
+  const term = e.currentTarget.dataset.jumpSearch;
+  if(!term) return;
+  showScreen('screen-room');
+  state.searchTerm = term;
+  const searchInput = $('#product-search');
+  if(searchInput) searchInput.value = term;
+  render();
+});
 
 $('#finalize-btn').addEventListener('click', () => {
   if(!state.room.finalized) toggleFinalize();
@@ -1372,6 +1682,7 @@ function showRouletteReveal(itemIds, triggeredBy){
   doneBtn.textContent = 'Done';
   modal.classList.add('show');
   state.rouletteItemIds = itemIds;
+  state.roulettePulsedCartIds = new Set();
 
   const slots = reel.querySelectorAll('.roulette-slot');
   const LAND_STEP_MS = 180, FIRST_LAND_MS = 480;
@@ -1395,6 +1706,7 @@ function closeRouletteModal(){
   $('#roulette-modal').classList.remove('show');
   state.rouletteItemIds = null;
   state.rouletteLanded = false;
+  state.roulettePulsedCartIds = new Set();
 }
 $('#roulette-close-btn').addEventListener('click', closeRouletteModal);
 $('#roulette-modal').addEventListener('click', (e) => {
@@ -1439,6 +1751,27 @@ $('#checkout-people').addEventListener('click', (e) => {
   if(e.target.closest('[data-pay]')) payShare();
 });
 
+$('#screen-checkout').addEventListener('click', (e) => {
+  const modeBtn = e.target.closest('[data-split-mode]');
+  if(modeBtn){ setSplitMode(modeBtn.dataset.splitMode); return; }
+  const resetBtn = e.target.closest('[data-reset-custom-amount]');
+  if(resetBtn){ resetCustomAmount(); return; }
+});
+
+let customAmountDebounceTimer = null;
+$('#screen-checkout').addEventListener('input', (e) => {
+  const input = e.target.closest('[data-custom-amount-input]');
+  if(!input) return;
+  clearTimeout(customAmountDebounceTimer);
+  customAmountDebounceTimer = setTimeout(() => setCustomAmount(input.value), 400);
+});
+$('#screen-checkout').addEventListener('change', (e) => {
+  const input = e.target.closest('[data-custom-amount-input]');
+  if(!input) return;
+  clearTimeout(customAmountDebounceTimer);
+  setCustomAmount(input.value);
+});
+
 (function checkDemoMode(){
   const params = new URLSearchParams(location.search);
   if(params.get('demo') !== '1') return;
@@ -1463,7 +1796,9 @@ const REC_CARD_GRADIENTS = [
 ];
 
 function checkReminders(){
-  fetch('/api/reminders')
+  const email = getStoredUserEmail();
+  if(!email) return;
+  fetch('/api/reminders?email=' + encodeURIComponent(email))
     .then(r => r.json())
     .then(d => {
       const reminder = (d.reminders || [])[0];
@@ -1472,7 +1807,7 @@ function checkReminders(){
 
       const icon = OCCASION_EMOJI[reminder.occasion] || '🎁';
       $('#reminder-modal-sub').textContent = `It's around ${new Date().toLocaleDateString('en-IN', { day:'numeric', month:'long', year:'numeric' })}`;
-      const isSelf = reminder.person.toLowerCase() === 'myself';
+      const isSelf = (reminder.recipient_relation || '').toLowerCase() === 'myself';
       const possessive = isSelf ? 'Your' : `${reminder.person}'s`;
       const forWhom = isSelf ? 'yourself' : reminder.person;
 
@@ -1506,20 +1841,21 @@ function checkReminders(){
 }
 checkReminders();
 
-function openLandingForReminder(occasion, recipient){
+function openLandingForReminder(occasion, relation, recipientName){
   showScreen('screen-profile');
   showScreen('screen-landing');
   $('#create-occasion').value = occasion;
   $('#create-itinerary').value = '';
-  $('#create-recipient').value = recipient;
-  $all('.recipient-chip').forEach(c => c.classList.toggle('active', c.dataset.recipient === recipient));
-  if(recipient) expandOptionalSection('recipient-section', 'toggle-recipient');
+  $('#create-recipient-relation').value = relation || '';
+  $('#create-recipient-name').value = recipientName || '';
+  $all('.recipient-chip').forEach(c => c.classList.toggle('active', c.dataset.recipient === relation));
+  if(relation) expandOptionalSection('recipient-section', 'toggle-recipient');
 }
 
 $('#reminder-shop-btn').addEventListener('click', () => {
   if(!activeReminder) return;
   $('#reminder-modal').classList.remove('show');
-  openLandingForReminder(activeReminder.occasion, activeReminder.person);
+  openLandingForReminder(activeReminder.occasion, activeReminder.recipient_relation, activeReminder.recipient_name);
 });
 
 $('#reminder-recs').addEventListener('click', (e) => {
@@ -1527,8 +1863,17 @@ $('#reminder-recs').addEventListener('click', (e) => {
   if(!btn || !activeReminder) return;
   $('#reminder-modal').classList.remove('show');
   state.preLikeItemId = btn.dataset.recItem;
-  openLandingForReminder(activeReminder.occasion, activeReminder.person);
+  openLandingForReminder(activeReminder.occasion, activeReminder.recipient_relation, activeReminder.recipient_name);
 });
 $('#reminder-close-btn').addEventListener('click', () => {
   $('#reminder-modal').classList.remove('show');
+});
+$('#reminder-archive-btn').addEventListener('click', () => {
+  if(!activeReminder) return;
+  fetch('/api/reminders/archive', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ room_code: activeReminder.room_code })
+  }).catch(() => {});
+  $('#reminder-modal').classList.remove('show');
+  activeReminder = null;
 });

@@ -136,7 +136,13 @@ class CreateRoomRequest(BaseModel):
     budget: int = 5000
     when: str = ""
     itinerary: list[str] = []
-    gift_recipient: str = ""
+    # Split into two fields on purpose -- "Friend" alone can't tell two
+    # different friends' birthdays apart a year later, and the old single
+    # field let picking a chip silently overwrite whatever name someone had
+    # already typed. Relationship is the chip (Mom/Friend/Boss/etc, or
+    # "Myself"); name is optional free text, never overwritten by a chip tap.
+    gift_recipient_relation: str = ""
+    gift_recipient_name: str = ""
 
 
 def make_room_code() -> str:
@@ -144,13 +150,29 @@ def make_room_code() -> str:
     return "".join(random.choices(safe_chars, k=5))
 
 
-def new_room_state(occasion: str, budget: int, when: str = "", itinerary: list | None = None, gift_recipient: str = "") -> dict:
+def gift_recipient_display(relation: str, name: str) -> str:
+    """The human-readable label used everywhere a recipient needs to show up
+    -- the room's gift note, checkout's split note, reminder headlines. Name
+    wins when given (it's more specific); relation alone is still a
+    perfectly good fallback for a quick "just Mom" gift with no name typed."""
+    name = (name or "").strip()
+    relation = (relation or "").strip()
+    if name:
+        return name
+    return relation
+
+
+def new_room_state(
+    occasion: str, budget: int, when: str = "", itinerary: list | None = None,
+    gift_recipient_relation: str = "", gift_recipient_name: str = "",
+) -> dict:
     return {
         "occasion": occasion,
         "budget": budget,
         "when": when,
         "itinerary": itinerary or [],
-        "gift_recipient": gift_recipient,
+        "gift_recipient_relation": gift_recipient_relation,
+        "gift_recipient_name": gift_recipient_name,
         "members": {},
         "participants": {},
         "participant_emails": {},
@@ -305,8 +327,8 @@ def compute_catchup(room: dict, client_id: str) -> dict | None:
 
 
 def is_gift_split_room(room: dict) -> bool:
-    recipient = (room.get("gift_recipient") or "").strip()
-    if not recipient or recipient.lower() == "myself":
+    relation = (room.get("gift_recipient_relation") or "").strip()
+    if not relation or relation.lower() == "myself":
         return False
     return len(room.get("participants", {})) > 1
 
@@ -314,7 +336,10 @@ def is_gift_split_room(room: dict) -> bool:
 @app.post("/api/rooms")
 def create_room(req: CreateRoomRequest):
     code = make_room_code()
-    rooms[code] = new_room_state(req.occasion, req.budget, req.when, req.itinerary, req.gift_recipient)
+    rooms[code] = new_room_state(
+        req.occasion, req.budget, req.when, req.itinerary,
+        req.gift_recipient_relation, req.gift_recipient_name,
+    )
     save_rooms()
     return {"room_id": code}
 
@@ -367,17 +392,30 @@ def get_room(room_id: str):
 
 
 @app.get("/api/reminders")
-def get_reminders():
+def get_reminders(email: str = ""):
+    email = email.strip().lower()
     today = date.today()
     window_days = 5
     reminders = []
 
     for squad in finished_squads:
-        if not squad.get("gift_recipient"):
+        if squad.get("archived"):
+            continue
+        if not squad.get("gift_recipient_relation"):
             continue
         if squad.get("had_itinerary"):
             continue
         if squad.get("reminded"):
+            continue
+
+        # Only ever surface a reminder to someone who was actually part of
+        # this squad -- without this, ANY logged-in person would see every
+        # gift reminder ever created by anyone, including gifts that have
+        # nothing to do with them. A squad saved before this field existed
+        # has no participant_emails at all, so it's excluded entirely rather
+        # than guessed at -- unverifiable identity defaults to hidden, not shown.
+        participant_emails = [e.strip().lower() for e in squad.get("participant_emails", [])]
+        if not email or email not in participant_emails:
             continue
 
         try:
@@ -390,7 +428,9 @@ def get_reminders():
             continue
 
         bought = squad.get("bought_items") or []
-        recipient = squad["gift_recipient"]
+        relation = squad.get("gift_recipient_relation", "")
+        recipient_name = squad.get("gift_recipient_name", "")
+        recipient_display = gift_recipient_display(relation, recipient_name)
 
         bought_ids = {b["id"] for b in bought}
         bought_tags = {b["tag"] for b in bought}
@@ -401,7 +441,9 @@ def get_reminders():
         squad["reminded"] = True
         reminders.append({
             "occasion": squad["occasion"],
-            "person": recipient,
+            "person": recipient_display,
+            "recipient_relation": relation,
+            "recipient_name": recipient_name,
             "room_code": squad["room_code"],
             "bought_item_name": bought[0]["name"] if bought else None,
             "bought_item_emoji": bought_first["emoji"] if bought_first else None,
@@ -417,9 +459,26 @@ def get_reminders():
     return {"reminders": reminders}
 
 
+class ArchiveReminderRequest(BaseModel):
+    room_code: str
+
+
+@app.post("/api/reminders/archive")
+def archive_reminder(req: ArchiveReminderRequest):
+    """"Don't remind me about this again" -- e.g. a falling-out with the
+    friend a gift was for. Permanent: once archived, this specific squad's
+    reminder never resurfaces, for anyone who was in it."""
+    for squad in finished_squads:
+        if squad.get("room_code") == req.room_code:
+            squad["archived"] = True
+            save_finished_squads()
+            return {"ok": True}
+    return {"ok": False, "error": "not_found"}
+
+
 @app.post("/api/demo/time-travel")
 def demo_time_travel():
-    gift_squads = [s for s in finished_squads if s.get("gift_recipient")]
+    gift_squads = [s for s in finished_squads if s.get("gift_recipient_relation")]
     if not gift_squads:
         return {"error": "no_history", "message": "Finish a checkout with a gift recipient set first, then time-travel."}
     latest = gift_squads[-1]
@@ -728,10 +787,17 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                         "occasion": room["occasion"],
                         "when": room["when"],
                         "members": list(room["participants"].values()),
+                        # Emails of everyone who was actually in this squad --
+                        # this is what lets a reminder later be shown ONLY to
+                        # people who were genuinely part of it, instead of to
+                        # anyone who happens to open the app. See get_reminders().
+                        "participant_emails": list(room.get("participant_emails", {}).values()),
                         "room_code": room_id,
-                        "gift_recipient": room.get("gift_recipient", ""),
+                        "gift_recipient_relation": room.get("gift_recipient_relation", ""),
+                        "gift_recipient_name": room.get("gift_recipient_name", ""),
                         "bought_items": bought_items,
                         "had_itinerary": bool(room.get("itinerary")),
+                        "archived": False,
                     })
                     save_finished_squads()
                 elif room.get("checkout_expires_at") is None:
@@ -752,30 +818,6 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                 # than waiting for the 4s server-side timeout to expire.
                 if typing_status.get(room_id, {}).pop(client_id, None) is not None:
                     await broadcast_typing(room_id)
-
-            elif action == "voice_chat":
-                audio = data.get("audio") or ""
-                mime = data.get("mime") or "audio/webm"
-                # Basic validation.
-                if (
-                    isinstance(audio, str)
-                    and audio.startswith("data:audio/")
-                    and len(audio) <= 2_000_000
-                ):
-                    await manager.broadcast(
-                        room_id,
-                        {
-                            "type": "voice_chat",
-                            "message": {
-                                "name": name,
-                                "audio": audio,
-                                "mime": mime,
-                            },
-                        },
-                    )
-                # Voice messages are intentionally transient.
-                # Do not save them into rooms_state.json.
-                continue
 
             elif action == "surprise_roulette":
                 picks = pick_surprise_items(room, CATALOG)
