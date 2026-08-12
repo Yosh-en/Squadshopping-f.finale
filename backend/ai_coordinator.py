@@ -16,6 +16,7 @@ call in this loop -- see the module-level note above score_feed for why).
 """
 
 import random
+import time
 from collections import Counter
 from datetime import datetime
 
@@ -336,7 +337,7 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
 
     tag_votes = Counter()
     liked_items = []
-    contested_names = []
+    contested = []  # (name, item_id) pairs, not just names -- need the id to check staleness
     tie_breaks = room.get("tie_breaks", {})
 
     for item_id, votes in reactions.items():
@@ -349,13 +350,56 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
         if len(likes) >= majority:
             liked_items.append(item)
         elif len(votes) >= 2 and len(set(votes.values())) > 1 and item_id not in tie_breaks:
-            contested_names.append(item["name"])
+            contested.append((item["name"], item_id))
 
-    # Priority order: an unresolved split vote is the most urgent thing to surface.
-    # Only ever return ONE sentence -- piling on multiple observations is why it
-    # was getting hard to notice anything new.
-    if contested_names:
-        return f"Split vote on {contested_names[0]} -- tap 'Break the tie' on that card."
+    activity_log = room.get("activity_log", [])
+    now = time.time()
+
+    def last_vote_ts(item_id=None, client_id=None):
+        """Most recent react timestamp matching the given filters, or 0 if
+        there's no matching activity at all -- reuses activity_log (already
+        recorded for catch-up banners) instead of needing new state just for
+        this."""
+        matches = [
+            e["ts"] for e in activity_log
+            if e["type"] == "react"
+            and (item_id is None or e["item_id"] == item_id)
+            and (client_id is None or e["client_id"] == client_id)
+        ]
+        return max(matches) if matches else 0
+
+    # Priority order: an unresolved split vote is the most urgent thing to
+    # surface. Only ever return ONE sentence -- piling on multiple
+    # observations is why it was getting hard to notice anything new.
+    if contested:
+        name, item_id = contested[0]
+        # A tie that's been sitting a while gets a nudge toward the fix
+        # rather than just restating that it exists -- the goal is to
+        # actually unstick the squad, not repeat the same line forever.
+        TIE_STALL_SECONDS = 30
+        if now - last_vote_ts(item_id=item_id) > TIE_STALL_SECONDS:
+            return f"Still split on {name} -- want to break the tie?"
+        return f"Split vote on {name} -- tap 'Break the tie' on that card."
+
+    # Nobody's stuck on a tie -- but is anyone stuck on *nothing*? If a
+    # member's gone quiet while other items still need their call, name
+    # them specifically rather than letting the squad silently stall on one
+    # distracted person. Deliberately no auto-resolve here -- surfacing it
+    # is enough; deciding for someone without their input would be worse
+    # than the stall itself.
+    MEMBER_QUIET_SECONDS = 45
+    participants = room.get("participants", {})
+    if len(participants) > 1:
+        for client_id, member_name in participants.items():
+            pending = 0
+            for item_id, votes in reactions.items():
+                if item_id in room.get("cart", []) or item_id in tie_breaks:
+                    continue
+                if votes and client_id not in votes:
+                    pending += 1
+            if pending and (now - last_vote_ts(client_id=client_id)) > MEMBER_QUIET_SECONDS:
+                plural = "item" if pending == 1 else "items"
+                return f"{member_name} hasn't voted in a bit -- {pending} {plural} still need their call."
 
     if liked_items:
         total = sum(i["price"] for i in liked_items)

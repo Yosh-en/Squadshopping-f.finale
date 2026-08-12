@@ -57,6 +57,13 @@ TYPING_TIMEOUT_SECONDS = 4  # server-side safety net if a "stop" signal is ever 
 voice_recording_status: Dict[str, Dict[str, float]] = {}
 RECORDING_TIMEOUT_SECONDS = 35  # slightly above the client's own 30s recording cap, as a safety net if "stop" is ever missed
 
+# A third parallel signal, same shape again -- someone looking at the
+# checkout recommendation card needs the rest of the squad to know, so
+# nobody pays mid-decision without realizing a possible add-on is being
+# considered. Stores {room_id: {client_id: (timestamp, item_name)}}.
+considering_status: Dict[str, Dict[str, tuple]] = {}
+CONSIDERING_TIMEOUT_SECONDS = 60  # generous -- this is a deliberate look, not a keystroke; a missed "stop" shouldn't clear it too eagerly
+
 FINISHED_SQUADS_FILE = BASE_DIR / "finished_squads.json"
 
 
@@ -215,6 +222,14 @@ def new_room_state(
         # like Splitwise instead of demanding everyone do arithmetic.
         "gift_split_mode": "even",
         "gift_split_manual": {},
+        # Checkout recommendation card ("complete the look") -- dismissing an
+        # item here has to be squad-wide, not per-browser. Otherwise each
+        # person's "Not now" only hides it on their own screen, and the two
+        # of them end up looking at two different cards without realizing
+        # it -- which is exactly what made liking/dismissing feel like it
+        # went nowhere: it wasn't affecting what the other person was even
+        # looking at.
+        "dismissed_recommendations": [],
     }
 
 
@@ -584,7 +599,19 @@ async def broadcast_typing(room_id: str):
     voice_recording_status[room_id] = active_recorders
     recorder_names = [room["participants"][cid] for cid in active_recorders if cid in room["participants"]]
 
-    await manager.broadcast(room_id, {"type": "typing", "typers": typer_names, "recorders": recorder_names})
+    active_considering = {
+        cid: entry for cid, entry in considering_status.get(room_id, {}).items()
+        if now - entry[0] < CONSIDERING_TIMEOUT_SECONDS
+    }
+    considering_status[room_id] = active_considering
+    considering_list = [
+        {"name": room["participants"][cid], "item_name": entry[1], "item_id": entry[2] if len(entry) > 2 else None}
+        for cid, entry in active_considering.items() if cid in room["participants"]
+    ]
+
+    await manager.broadcast(room_id, {
+        "type": "typing", "typers": typer_names, "recorders": recorder_names, "considering": considering_list,
+    })
 
 
 @app.websocket("/ws/{room_id}")
@@ -859,7 +886,7 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
             elif action == "chat":
                 text = (data.get("text") or "").strip()
                 if text:
-                    room["chat"].append({"name": name, "text": text})
+                    room["chat"].append({"name": name, "text": text, "ts": time.time()})
                 # Sending a message implies the person's done typing -- clear
                 # their typing flag and let the others know immediately rather
                 # than waiting for the 4s server-side timeout to expire.
@@ -883,6 +910,7 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                                 "name": name,
                                 "audio": audio,
                                 "mime": mime,
+                                "ts": time.time(),
                             },
                         },
                     )
@@ -924,6 +952,24 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                 await broadcast_typing(room_id)
                 continue
 
+            elif action == "considering_item_start":
+                item_name = (data.get("item_name") or "an item").strip()
+                item_id = data.get("item_id")
+                considering_status.setdefault(room_id, {})[client_id] = (time.time(), item_name, item_id)
+                await broadcast_typing(room_id)
+                continue
+
+            elif action == "considering_item_stop":
+                considering_status.get(room_id, {}).pop(client_id, None)
+                await broadcast_typing(room_id)
+                continue
+
+            elif action == "dismiss_recommendation":
+                item_id = data.get("item_id")
+                if item_id and item_id not in room.setdefault("dismissed_recommendations", []):
+                    room["dismissed_recommendations"].append(item_id)
+                event = {"name": name, "verb": "dismissed a suggested add-on"}
+
             await broadcast_state(room_id, event=event)
 
     except (WebSocketDisconnect, RuntimeError):
@@ -935,7 +981,8 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
         # would linger for everyone else until the timeout quietly expires it.
         typing_cleared = typing_status.get(room_id, {}).pop(client_id, None) is not None
         recording_cleared = voice_recording_status.get(room_id, {}).pop(client_id, None) is not None
-        if typing_cleared or recording_cleared:
+        considering_cleared = considering_status.get(room_id, {}).pop(client_id, None) is not None
+        if typing_cleared or recording_cleared or considering_cleared:
             await broadcast_typing(room_id)
         await broadcast_state(room_id)
 
