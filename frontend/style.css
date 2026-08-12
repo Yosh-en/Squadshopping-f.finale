@@ -2501,6 +2501,85 @@ input:focus {
   border-top: 1px solid var(--border);
 }
 
+/* When an item's already in the squad cart but voting stays open (see
+   app.js cardHtml()) -- a lighter-weight treatment so this doesn't read as
+   urgently as the normal undecided vote row, while still making clear a
+   late vote is genuinely being accepted, not just decorative. */
+.card-actions.cart-actions {
+  opacity: 0.85;
+  border-top-color: transparent;
+  padding-bottom: 0;
+}
+
+.cart-locked-note {
+  padding: 4px 9px 8px;
+  font-size: 10px;
+  color: var(--green);
+  text-align: center;
+  font-weight: 700;
+}
+
+/* A carted item someone has voted against -- amber, not green, since it's
+   in the cart but no longer cleanly agreed. Overrides the .in-cart green
+   border, so it needs to come after it in the file. */
+.card.in-cart.contested {
+  border-color: #F5A623;
+}
+
+.objection-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: #F5A623;
+  color: #fff;
+  font-size: 8.5px;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 8px;
+  z-index: 2;
+  letter-spacing: 0.2px;
+}
+
+.cart-objection-note {
+  padding: 4px 9px 7px;
+  font-size: 10px;
+  color: #9A5B00;
+  text-align: center;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.roulette-slot-status.objected {
+  color: #FFE0A8;
+  background: rgba(245, 166, 35, 0.28);
+}
+
+/* Mixed votes that AREN'T a real deadlock yet (someone hasn't voted, so
+   it's just in progress) -- a quiet status line instead of the urgent
+   orange "Split vote" treatment, which is reserved for a genuine
+   deadlock (see computeVoteStatus() in app.js). */
+.mixed-progress-note {
+  padding: 7px 9px;
+  font-size: 10.5px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.4;
+  border-top: 1px solid var(--border);
+}
+
+.mini-tie-link {
+  display: inline-block;
+  margin-left: 4px;
+  border: none;
+  background: none;
+  color: var(--pink-dark);
+  font-weight: 700;
+  font-size: 10.5px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+
 .react-btn {
   width: 29px;
   height: 29px;
@@ -2728,6 +2807,9 @@ input:focus {
   display: flex;
   gap: 5px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  max-width: 96px;
+  justify-content: flex-end;
 }
 
 .assign-chip {
@@ -2972,15 +3054,30 @@ input:focus {
   background: #FFF3E0;
   border: 1px solid #FFD9A0;
   border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #9A5B00;
-  cursor: pointer;
+  padding: 12px 14px;
   line-height: 1.5;
 }
 
-.outfit-gap-link{ color:var(--pink-dark); font-weight:800; white-space:nowrap; }
+.reco-card-header{ font-size: 11.5px; font-weight: 700; color: #9A5B00; margin-bottom: 10px; }
+.reco-card-body{ display: flex; gap: 10px; align-items: center; }
+.reco-card-media{
+  width: 52px; height: 52px; border-radius: 8px; overflow: hidden; flex-shrink: 0;
+  background: var(--surface); display: flex; align-items: center; justify-content: center; font-size: 24px;
+}
+.reco-card-media .media-img{ width: 100%; height: 100%; object-fit: cover; display: block; }
+.reco-card-info{ flex: 1; min-width: 0; }
+.reco-card-name{ font-size: 12px; font-weight: 700; color: var(--ink); line-height: 1.35; }
+.reco-card-price{ font-size: 12.5px; font-weight: 800; color: var(--ink); margin-top: 2px; }
+.reco-card-budget-line{ font-size: 10.5px; color: #9A5B00; margin-top: 3px; line-height: 1.4; }
+.reco-card-view-link{ display: block; margin-top: 6px; font-size: 10.5px; font-weight: 700; color: var(--pink-dark); cursor: pointer; }
+.reco-card-status{ margin-top: 6px; font-size: 11px; font-weight: 600; color: #9A5B00; }
+.reco-card-dismiss-link{ display: block; margin-top: 6px; font-size: 10.5px; font-weight: 600; color: var(--muted); cursor: pointer; text-decoration: underline; }
+
+.checkout-considering-banner{
+  margin: 10px 16px 0; background: #EFEBFB; border: 1px solid #D9CDF5; border-radius: 10px;
+  padding: 9px 13px; font-size: 11.5px; font-weight: 600; color: #5A3FA0; line-height: 1.4;
+}
+.checkout-considering-banner.clickable{ cursor: pointer; text-decoration: underline; text-decoration-color: #D9CDF5; }
 
 .checkout-reservation-banner{
   margin:14px 16px 0; background:linear-gradient(120deg,#FFF3E0,#FFEACC); border:1px solid #FFD9A0;
@@ -3037,3 +3134,357 @@ input:focus {
 
 .recipient-name-label{ margin-top:12px !important; }
 .reminder-archive-link{ color:#B5453E; font-size:11px; text-decoration:underline; margin-top:4px; }
+
+/* ---------- Split-vote nudge + AI advice (advisory, not deciding) -------- */
+/* Inline banner instead of a force-opened chat drawer. Amber (the app's
+   existing "needs attention" colour) rather than red -- a split vote is a
+   normal part of shopping together, not an error state. */
+.tie-nudge-banner {
+  display: none;
+  position: relative;
+  margin: 10px 16px 0;
+  background: linear-gradient(120deg, #FFF3E0, #FFE7C4);
+  border: 1px solid #FFD9A0;
+  border-radius: 12px;
+  padding: 11px 34px 11px 13px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.tie-nudge-banner.show {
+  display: flex;
+}
+
+.tie-nudge-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tie-nudge-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #7A4700;
+  line-height: 1.3;
+}
+
+.tie-nudge-sub {
+  font-size: 10.5px;
+  color: #9A5B00;
+  line-height: 1.4;
+}
+
+.tie-nudge-how {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: #7A4700;
+  text-decoration: underline;
+  cursor: pointer;
+  font-family: 'Inter';
+}
+
+.tie-nudge-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+/* Chat is the primary action -- filled, not outlined -- because discussion is
+   what the squad actually wanted; it just shouldn't be forced on them. */
+.tie-nudge-chat-btn {
+  border: none;
+  background: #9A5B00;
+  color: #fff;
+  font-weight: 700;
+  font-size: 10.5px;
+  padding: 6px 11px;
+  border-radius: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tie-nudge-chat-btn:active {
+  background: #7A4700;
+}
+
+.tie-nudge-jump-btn {
+  border: 1.5px solid #E0B878;
+  background: rgba(255, 255, 255, 0.7);
+  color: #7A4700;
+  font-weight: 700;
+  font-size: 10.5px;
+  padding: 5px 11px;
+  border-radius: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tie-nudge-close {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  border: none;
+  background: none;
+  color: #9A5B00;
+  opacity: 0.65;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px;
+  line-height: 1;
+}
+
+/* The two options on a contested card. Stacked, full width, chat first. */
+.contested-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 8px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.discuss-btn {
+  width: 100%;
+  border: none;
+  background: #F5A623;
+  color: #fff;
+  font-weight: 700;
+  font-size: 10.5px;
+  padding: 7px 0;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: 'Inter';
+}
+
+.discuss-btn:active {
+  background: #D8901A;
+}
+
+.get-read-btn {
+  width: 100%;
+  border: 1.5px solid #2A2D45;
+  background: #fff;
+  color: #2A2D45;
+  font-weight: 700;
+  font-size: 10.5px;
+  padding: 6px 0;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: 'Inter';
+}
+
+.get-read-btn:active {
+  background: var(--canvas);
+}
+
+/* The AI's read: one verdict, one reason. Dark like the AI note bar so it's
+   visibly the coordinator speaking. A green tint on "keep it" would make it
+   look like the item had been added -- it hasn't, and only votes can do that --
+   so the accent is kept to the verdict text itself. */
+.advice-panel {
+  border-top: 1px solid var(--border);
+  background: linear-gradient(135deg, #2A2D45, #1c1e30);
+  color: #fff;
+  padding: 9px 9px 8px;
+}
+
+.advice-verdict {
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1.3;
+  margin-bottom: 3px;
+}
+
+.advice-panel.verdict-yes .advice-verdict {
+  color: #B8F5CE;
+}
+
+.advice-panel.verdict-no .advice-verdict {
+  color: #FFC9A8;
+}
+
+.advice-reason {
+  font-size: 10px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: 6px;
+}
+
+.advice-footer {
+  font-size: 9px;
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 0 6px;
+  line-height: 1.3;
+}
+
+.advice-chat-btn {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 700;
+  font-size: 10px;
+  padding: 6px 0;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: 'Inter';
+}
+
+.advice-chat-btn:active {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* Compact roulette-slot equivalents -- a slot is ~110px wide, so no lists. */
+.roulette-slot-contested-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.roulette-slot-discuss-btn {
+  border: none;
+  background: #F5A623;
+  color: #fff;
+  font-weight: 700;
+  font-size: 8px;
+  padding: 4px 3px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: 'Inter';
+}
+
+.roulette-slot-read-btn {
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-weight: 700;
+  font-size: 8px;
+  padding: 4px 3px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: 'Inter';
+}
+
+.roulette-slot-advice {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.roulette-slot-advice.verdict-yes { color: #B8F5CE; }
+.roulette-slot-advice.verdict-no { color: #FFC9A8; }
+
+/* ---------- Recommendation card: one card, not two banners -------------- */
+/* "Who else is looking at this" now lives inside the recommendation card
+   itself. It used to be a separate banner that couldn't say which item was
+   being looked at or offer to take you there -- and worse, it fired for
+   anyone merely sitting on the checkout screen, so three people saw "3
+   members are considering add-ons" when nobody had actually tapped anything.
+   It's now driven only by an explicit "View item" tap. */
+.reco-card-looker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  background: #EFEBFB;
+  border: 1px solid #D9CDF5;
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #5A3FA0;
+  line-height: 1.35;
+}
+
+.reco-looker-jump {
+  flex-shrink: 0;
+  border: none;
+  background: #5A3FA0;
+  color: #fff;
+  font-weight: 700;
+  font-size: 10px;
+  padding: 5px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: 'Inter';
+}
+
+.reco-looker-jump:active {
+  background: #462F80;
+}
+
+.reco-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+}
+
+.reco-card-view-btn {
+  border: none;
+  background: #9A5B00;
+  color: #fff;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 7px 13px;
+  border-radius: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: 'Inter';
+}
+
+.reco-card-view-btn:active {
+  background: #7A4700;
+}
+
+.reco-card-dismiss-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: underline;
+  font-family: 'Inter';
+}
+
+/* Floating one-tap return for anyone who jumped to the shelf from checkout --
+   sits above the cart bar so it never covers the vote buttons. */
+.return-to-checkout {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  z-index: 30;
+  border: none;
+  background: var(--ink);
+  color: #fff;
+  font-weight: 700;
+  font-size: 11.5px;
+  padding: 9px 16px;
+  border-radius: 20px;
+  box-shadow: 0 8px 20px -6px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: 'Inter';
+}
+
+.return-to-checkout.show {
+  display: block;
+}

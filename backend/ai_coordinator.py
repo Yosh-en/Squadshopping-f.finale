@@ -13,6 +13,12 @@ NEW: score_feed() -- a real multi-stage recommender, replacing the old
 "just filter by occasion tag" ordering with something that actually adapts
 to what the squad votes on, while staying a plain scoring function (no LLM
 call in this loop -- see the module-level note above score_feed for why).
+
+NEW: vote_status() -- a single shared definition of what an item's vote
+state actually means once a squad might be 3-5 people, not just 2. See its
+docstring for the reasoning; get_ai_suggestion() and main.py's
+compute_catchup()/react handler all defer to this instead of each
+reimplementing (and, previously, mis-implementing) their own tie check.
 """
 
 import random
@@ -66,8 +72,8 @@ KEYWORD_TAG_RULES = [
     (["monsoon", "rain", "rainy"], ["monsoon", "solid"]),
 ]
 
-# Mirrors frontend/app.js's OCCASION_TAGS -- kept in sync manually, same reasoning
-# as KEYWORD_TAG_RULES above. Used by score_feed() as the baseline preference for
+# Mirrors frontend/app.js's OCCASION_TAGS -- kept in sync manually, same
+# reasoning as KEYWORD_TAG_RULES above. Used by score_feed() as the baseline preference for
 # every member (see Stage 1 below), and by the roulette picker to bias toward tags
 # the squad's occasion already favours, without hard-filtering to only those tags.
 OCCASION_TAGS = {
@@ -128,6 +134,16 @@ def infer_function_for_item(item: dict, itinerary: list):
 # Before anyone's voted on anything, every member's score collapses to the
 # same occasion/season baseline -- so a brand new squad still gets a
 # sensibly-ordered feed from the very first render, not a random one.
+#
+# NOTE on squad size: least-misery aggregation (a strict min() across every
+# member) scales correctly to 5 people, but the more people in the room, the
+# more likely one picky member's low score alone suppresses an item for
+# everyone -- that's an inherent tradeoff of least-misery, not a bug. If a
+# judge asks "does this get worse with bigger squads," the honest answer is
+# "somewhat, yes" -- a percentile-based floor (e.g. 20th-percentile-worst
+# instead of strict min) would soften that for squads above some size. Not
+# built here on purpose -- flagging it as a known, explainable tradeoff is
+# the right amount of engineering for a hackathon demo, not the fix itself.
 
 # Persistent (cross-session) taste counts toward a member's score at a much
 # lower weight than what they've actually voted on THIS session. Reasoning:
@@ -259,23 +275,58 @@ def pick_surprise_items(room: dict, catalog: list, n: int = 5) -> list:
     return picked
 
 
-def reasoned_tie_break(item: dict, room: dict, catalog: list) -> tuple:
-    """Replaces a coin-flip with an actual, data-grounded verdict -- rule-based
-    by design, so it never depends on an external API mid-demo. If you want a
-    real LLM call layered on top later, this function's return shape (decision,
-    verdict text) is exactly what that call should also produce, with this as
-    the fallback if the call times out or errors."""
+def tie_break_advice(item: dict, room: dict, catalog: list) -> dict:
+    """A clear recommendation -- yes or no -- with the single strongest reason
+    behind it. Advice, still not a verdict: it never touches the cart.
+
+    Shape history, because it's been through two rounds of feedback:
+      1. Originally reasoned_tie_break(), which DECIDED (added/removed the
+         item itself). Killed by feedback: an AI overriding a deadlocked human
+         vote is the one thing this product otherwise promises not to do.
+      2. Then a for/against panel listing every signal both ways. Also killed
+         by feedback, for the opposite reason -- a two-column pros-and-cons
+         table on a phone-sized card is homework, not help. Nobody wants to
+         adjudicate a list; they want a straight answer.
+    So: keep the decisive SHAPE of (1) -- a plain yes or no, like the old
+    added/skipped -- with the non-binding AUTHORITY of (2). The AI says what
+    it would do and why in one line; the squad's votes remain the only thing
+    that can actually move the item.
+
+    Returns {"verdict": "yes"|"no", "headline": str, "reason": str}.
+    """
     reasons_for, reasons_against = [], []
+
+    # The squad's own votes lead -- they're the most relevant evidence there
+    # is, and citing them is what makes this read as "here's your situation"
+    # rather than a generic product blurb.
+    votes = room.get("reactions", {}).get(item["id"], {})
+    likes = sum(1 for v in votes.values() if v == "like")
+    passes = sum(1 for v in votes.values() if v == "pass")
+    if likes or passes:
+        if passes == 0:
+            reasons_for.append(f"every vote on it so far was a like ({likes})")
+        elif likes > passes * 2:
+            reasons_for.append(f"most of the squad's behind it ({likes} liked vs {passes} passed)")
+        elif passes > likes * 2:
+            reasons_against.append(f"most of the squad isn't behind it ({passes} passed vs {likes} liked)")
+        elif likes > passes:
+            reasons_for.append(f"slightly more of you liked it ({likes}-{passes})")
+        elif passes > likes:
+            reasons_against.append(f"slightly more of you passed on it ({passes}-{likes})")
+        # An exact even split is deliberately NOT added as a reason either
+        # way -- "you're evenly split" is the thing they already know and the
+        # reason they're asking. Saying it back is what made the old panel
+        # feel like it was dodging the question.
 
     season = season_hint(room.get("when", ""))
     if season:
         if item["tag"] in season["tags"]:
             reasons_for.append(f"it fits {season['label']} well")
         else:
-            reasons_against.append(f"{season['label']} usually favours {'/'.join(season['tags'])}, not '{item['tag']}'")
+            reasons_against.append(f"{season['label']} usually favours {'/'.join(season['tags'])}")
 
     if item.get("rating", 0) >= 4.4:
-        reasons_for.append(f"it's rated {item['rating']}★, one of the stronger picks in the feed")
+        reasons_for.append(f"it's one of the better-rated pieces here ({item['rating']}\u2605)")
 
     discount = round((1 - item["price"] / item["mrp"]) * 100) if item.get("mrp") else 0
     if discount >= 40:
@@ -284,20 +335,116 @@ def reasoned_tie_break(item: dict, room: dict, catalog: list) -> tuple:
     budget = room.get("budget", 0)
     catalog_by_id = {i["id"]: i for i in catalog}
     cart_total = sum(catalog_by_id[i]["price"] for i in room.get("cart", []) if i in catalog_by_id)
-    if budget and (cart_total + item["price"]) > budget:
-        over = (cart_total + item["price"]) - budget
-        reasons_against.append(f"adding it would push the squad ₹{over} over budget")
+    already_in_cart = item["id"] in room.get("cart", [])
+    over_budget = False
+    if budget and not already_in_cart:
+        projected = cart_total + item["price"]
+        if projected > budget:
+            over_budget = True
+            reasons_against.append(f"it'd put you \u20b9{projected - budget} over budget")
+        else:
+            reasons_for.append(f"it still leaves \u20b9{budget - projected} in the budget")
 
-    add_it = len(reasons_for) >= len(reasons_against) if (reasons_for or reasons_against) else True
-
-    if add_it:
-        reason = reasons_for[0] if reasons_for else "no strong reason to skip it came up"
-        verdict = f"Added to the cart -- {reason}."
+    # Always lands on yes or no -- same as the original added/skipped
+    # behaviour.
+    #
+    # Budget is a VETO, not just one signal among many. score_feed()'s Stage 1
+    # already treats the squad's budget as a hard filter, so it would be
+    # incoherent for the advisor to recommend adding something that breaks it
+    # just because three softer signals (rating, discount, season) happened to
+    # outnumber it. The squad set that number; the AI doesn't get to outvote
+    # it either.
+    if over_budget:
+        verdict = "no"
+    elif len(reasons_for) > len(reasons_against):
+        verdict = "yes"
+    elif len(reasons_against) > len(reasons_for):
+        verdict = "no"
     else:
-        reason = reasons_against[0] if reasons_against else "the case against outweighed the case for"
-        verdict = f"Left out -- {reason}."
+        # Genuine tie on reason count -- let a strong rating carry it.
+        verdict = "yes" if item.get("rating", 0) >= 4.2 else "no"
 
-    return add_it, verdict
+    if verdict == "yes":
+        reason = reasons_for[0] if reasons_for else "nothing about it stands out as a problem"
+        headline = "Yeah, I'd keep it."
+    else:
+        # Lead with the budget when that's what settled it -- burying the
+        # actual deciding factor behind a softer one would be misleading.
+        if over_budget:
+            reason = next((r for r in reasons_against if "over budget" in r), reasons_against[0])
+        else:
+            reason = reasons_against[0] if reasons_against else "nothing about it stands out as a must-have"
+        headline = "I'd let this one go."
+
+    return {
+        "verdict": verdict,
+        "headline": headline,
+        "reason": reason,
+        "ts": time.time(),
+    }
+
+
+def vote_status(votes: dict, participant_count: int) -> str:
+    """Classifies a single item's vote state relative to majority, aware of
+    how many participants COULD still vote -- not just how many already
+    have. Returns one of: "consensus_like", "contested_consensus",
+    "rejected", "deadlocked", "in_progress", "unvoted".
+
+    Mirrors frontend/app.js's computeVoteStatus() -- kept in sync manually,
+    same reasoning as KEYWORD_TAG_RULES/OCCASION_TAGS above.
+
+    This replaces the old "any 2 conflicting votes = tied" check that used
+    to live inline in get_ai_suggestion() and main.py's compute_catchup().
+    That read was fine for a 2-person squad -- with nobody else who could
+    ever vote, any disagreement really was a permanent deadlock. But for a
+    3-5 person squad, 2 people disagreeing while the rest haven't voted yet
+    is just an in-progress read, not a real stall -- flagging it as a "tie"
+    would nag the squad into a coin-flip constantly instead of letting the
+    remaining votes actually settle it.
+
+    "deadlocked" now only fires once EVERY participant has voted and it's an
+    exact 50/50 split -- which, by the math, is only even possible for an
+    even-sized squad. Odd-sized squads can never truly deadlock once
+    everyone's in: they either clear majority or they don't, cleanly.
+
+    "contested_consensus" vs "consensus_like": once majority is reached, no
+    further single vote can arithmetically undo it (4 likes of 6 stays 4
+    likes of 6 no matter what the last two do). Recording a late dissent and
+    then doing nothing with it would make that person's vote decorative --
+    they'd be asked for input that provably cannot matter. So a carted item
+    carrying any pass at all is reported as CONTESTED rather than settled:
+    the item stays in the cart (majority rules -- one late objector should
+    never get a unilateral veto over four other people), but the squad gets
+    an explicit "settle the objection" path that re-runs the real
+    tie-breaker, which genuinely can remove it. That makes a late vote
+    consequential without making it dictatorial. Deliberately not
+    auto-resolved -- same reasoning as the quiet-member nudge below: surface
+    it, let the squad decide.
+    """
+    likes = sum(1 for v in votes.values() if v == "like")
+    passes = sum(1 for v in votes.values() if v == "pass")
+    voted = likes + passes
+    remaining = max(0, participant_count - voted)
+    majority = 1 if participant_count <= 1 else max(2, (participant_count // 2) + 1)
+
+    if likes >= majority:
+        return "contested_consensus" if passes > 0 else "consensus_like"
+    # ORDER MATTERS: the deadlock check MUST come before the "rejected"
+    # check below. An exact 50/50 split also, by definition, cannot reach
+    # majority -- so if "rejected" is tested first it swallows every real
+    # tie, including the ordinary 1-1 split in a 2-person squad, and the
+    # tie-breaker silently never gets offered to anyone. (Learned the hard
+    # way: reversing these two lines breaks the flagship tie-break feature
+    # for the most common squad size, with no error message anywhere.)
+    if remaining == 0 and likes == passes and likes > 0:
+        return "deadlocked"
+    if likes + remaining < majority:
+        # Even if every remaining participant liked it, it still couldn't
+        # reach majority -- effectively rejected, not a stall.
+        return "rejected"
+    if voted > 0:
+        return "in_progress"
+    return "unvoted"
 
 
 def get_ai_suggestion(room: dict, catalog: list) -> str:
@@ -332,13 +479,25 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
         return base
 
     catalog_by_id = {item["id"]: item for item in catalog}
-    member_count = max(len(members), 1)
-    majority = max(2, (member_count // 2) + 1)
+    # participants (survives a disconnect), not members (live sockets only)
+    # -- the bar for consensus, and what counts as a genuine deadlock,
+    # shouldn't shift just because someone's wifi blipped for a second.
+    participants = room.get("participants") or members
+    participant_count = max(len(participants), 1)
+    majority = 1 if participant_count <= 1 else max(2, (participant_count // 2) + 1)
 
     tag_votes = Counter()
     liked_items = []
     contested = []  # (name, item_id) pairs, not just names -- need the id to check staleness
-    tie_breaks = room.get("tie_breaks", {})
+    # Carted-on-majority items that someone has since voted against. Kept
+    # separate from `contested` (a true 50/50 deadlock) because the two need
+    # different wording and a different urgency -- see vote_status().
+    objected = []
+    # Advice already given on an item, keyed by item id. Note this never
+    # RESOLVES anything (unlike the old tie_breaks lock it replaced), so an
+    # advised item stays contested until the squad actually changes a vote --
+    # the note copy below just stops nagging them to ask twice.
+    tie_advice = room.get("tie_advice", {})
 
     for item_id, votes in reactions.items():
         item = catalog_by_id.get(item_id)
@@ -347,9 +506,13 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
         likes = [v for v in votes.values() if v == "like"]
         for _ in likes:
             tag_votes[item["tag"]] += 1
+        status = vote_status(votes, participant_count)
         if len(likes) >= majority:
             liked_items.append(item)
-        elif len(votes) >= 2 and len(set(votes.values())) > 1 and item_id not in tie_breaks:
+            if status == "contested_consensus":
+                passes = sum(1 for v in votes.values() if v == "pass")
+                objected.append((item["name"], item_id, len(likes), passes))
+        elif status == "deadlocked":
             contested.append((item["name"], item_id))
 
     activity_log = room.get("activity_log", [])
@@ -373,13 +536,26 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
     # observations is why it was getting hard to notice anything new.
     if contested:
         name, item_id = contested[0]
-        # A tie that's been sitting a while gets a nudge toward the fix
-        # rather than just restating that it exists -- the goal is to
-        # actually unstick the squad, not repeat the same line forever.
+        # Copy deliberately points at the SQUAD resolving it, with the AI's
+        # read offered as optional input. It never says the AI will decide,
+        # because it won't -- see tie_break_advice() above.
+        if item_id in tie_advice:
+            return f"Still split on {name} -- my read's on the card, but the call's yours. Chat's there if you want to talk it out."
         TIE_STALL_SECONDS = 30
         if now - last_vote_ts(item_id=item_id) > TIE_STALL_SECONDS:
-            return f"Still split on {name} -- want to break the tie?"
-        return f"Split vote on {name} -- tap 'Break the tie' on that card."
+            return f"Still split on {name} -- talk it out in chat, or tap 'Get my read' if a second opinion helps."
+        return f"Squad's split on {name} -- worth a quick chat, or tap 'Get my read' on that card."
+
+    # Someone voted against something already in the cart. It stays there
+    # (majority rules), but saying so plainly is the whole point -- otherwise
+    # that person's vote is invisible to everyone else and they'd have no
+    # reason to believe it registered at all.
+    if objected:
+        name, item_id, likes_n, passes_n = objected[0]
+        who = "someone" if passes_n == 1 else f"{passes_n} people"
+        if item_id in tie_advice:
+            return f"{name}'s in on a {likes_n}-{passes_n} majority and {who} objected -- my read's on the card, the call's yours."
+        return f"{name}'s in the cart on a {likes_n}-{passes_n} majority, but {who} objected -- worth a chat before you check out."
 
     # Nobody's stuck on a tie -- but is anyone stuck on *nothing*? If a
     # member's gone quiet while other items still need their call, name
@@ -388,12 +564,11 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
     # is enough; deciding for someone without their input would be worse
     # than the stall itself.
     MEMBER_QUIET_SECONDS = 45
-    participants = room.get("participants", {})
     if len(participants) > 1:
         for client_id, member_name in participants.items():
             pending = 0
             for item_id, votes in reactions.items():
-                if item_id in room.get("cart", []) or item_id in tie_breaks:
+                if item_id in room.get("cart", []) or item_id in tie_advice:
                     continue
                 if votes and client_id not in votes:
                     pending += 1

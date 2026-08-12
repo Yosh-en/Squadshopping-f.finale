@@ -12,7 +12,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ai_coordinator import get_ai_suggestion, infer_function_for_item, reasoned_tie_break, pick_surprise_items, score_feed
+from ai_coordinator import (
+    get_ai_suggestion,
+    infer_function_for_item,
+    tie_break_advice,
+    pick_surprise_items,
+    score_feed,
+    vote_status,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
@@ -20,6 +27,18 @@ CATALOG = json.loads((BASE_DIR / "catalog.json").read_text(encoding="utf-8"))
 CATALOG_BY_ID = {item["id"]: item for item in CATALOG}
 
 app = FastAPI(title="Shop Together (Myntra Hackathon MVP)")
+
+# Hard cap on squad size. Nothing in the logic assumes a specific number --
+# the majority formula, vote_status()'s deadlock/objection detection, the
+# "who hasn't voted" nudge, least-misery scoring and the gift splits are all
+# written generically over participant_count, so 6 is not a special case.
+# The cap exists because demoing something *unbounded* live is asking for
+# trouble, and the real constraint is UI density on a phone-width screen:
+# checkout's per-item assign chips wrap to a second row at 4+ (three 28px
+# chips per 96px row), so 6 means two rows per cart item -- busier, still
+# perfectly readable. Mirrored in frontend/app.js's MAX_SQUAD_SIZE -- kept
+# in sync manually, same reasoning as OCCASION_TAGS/KEYWORD_TAG_RULES there.
+MAX_SQUAD_SIZE = 6
 
 # ---- state persistence -------------------------------------------------
 ROOMS_FILE = BASE_DIR / "rooms_state.json"
@@ -198,8 +217,12 @@ def new_room_state(
         "participant_emails": {},
         "reactions": {},
         "cart": [],
-        "tie_breaks": {},
-        "tie_break_reasons": {},
+        # AI advice on contested items, keyed by item id: {item_id: advice}.
+        # Replaces the old tie_breaks/tie_break_reasons pair, which STORED A
+        # DECISION and mutated the cart. This only ever stores a read the
+        # squad asked for -- see ai_coordinator.tie_break_advice() for why
+        # the AI no longer decides ties at all.
+        "tie_advice": {},
         "assignments": {},
         "occasion_tags": {},
         "payments": {},
@@ -335,15 +358,20 @@ def compute_catchup(room: dict, client_id: str) -> dict | None:
     voters = sorted(set(e["actor"] for e in new_votes))
     touched_items = set(e["item_id"] for e in new_votes)
 
+    # participants, not a raw len(votes)>=2 check -- see vote_status()'s
+    # docstring in ai_coordinator.py for why "any 2 conflicting votes" was
+    # never a correct definition of "tied" once a squad can be 3-5 people.
+    participant_count = max(len(room.get("participants", {})), 1)
+
     needs_call = 0
     tied_count = 0
     for item_id in touched_items:
-        if item_id in room["cart"] or item_id in room["tie_breaks"]:
+        if item_id in room["cart"] or item_id in room.get("tie_advice", {}):
             continue
         votes = room["reactions"].get(item_id, {})
         if client_id not in votes:
             needs_call += 1
-        if len(votes) >= 2 and len(set(votes.values())) > 1:
+        if vote_status(votes, participant_count) == "deadlocked":
             tied_count += 1
 
     return {
@@ -416,7 +444,13 @@ def get_room(room_id: str):
         return {"error": "not_found"}
     attach_gift_split_resolution(room)
     feed_scores = score_feed(room, CATALOG, persistent_profiles=persistent_profiles_for_room(room))
-    return {"catalog": CATALOG, "feed_scores": feed_scores, **room}
+    # So the frontend's pre-join check (join-form submit handler) can warn
+    # "this squad's full" before ever opening a socket, instead of only
+    # finding out via a websocket rejection after the screen's already
+    # switched. The websocket connect below is still the real, authoritative
+    # cap enforcement -- this is just a friendlier heads-up.
+    at_capacity = len(room.get("participants", {})) >= MAX_SQUAD_SIZE
+    return {"catalog": CATALOG, "feed_scores": feed_scores, "max_squad_size": MAX_SQUAD_SIZE, "at_capacity": at_capacity, **room}
 
 
 @app.get("/api/reminders")
@@ -625,6 +659,18 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
     client_id = ws.query_params.get("client_id") or name
     email = (ws.query_params.get("email") or "").strip().lower()
 
+    room = rooms[room_id]
+    # Squad-size cap, enforced here (not just in the frontend's pre-join
+    # check) since this is the one place that's actually authoritative --
+    # two people tapping "Join" at the exact same moment on a squad sitting
+    # at MAX_SQUAD_SIZE-1 is a real race the REST pre-check alone can't
+    # close. Reconnecting is always allowed regardless of the cap: this is
+    # about turning away genuinely NEW participants, not punishing someone
+    # whose socket dropped and is coming back.
+    if client_id not in room.get("participants", {}) and len(room.get("participants", {})) >= MAX_SQUAD_SIZE:
+        await ws.close(code=4008)
+        return
+
     await manager.connect(room_id, client_id, ws)
     room = rooms[room_id]
 
@@ -656,8 +702,14 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                 })
 
                 likes = sum(1 for r in room["reactions"][item_id].values() if r == "like")
-                member_count = max(len(room["members"]), 1)
-                majority = 1 if member_count == 1 else max(2, (member_count // 2) + 1)
+                # participants, not members -- a dropped socket shouldn't
+                # change what the squad already agreed the bar for
+                # consensus was. See vote_status() in ai_coordinator.py for
+                # the fuller reasoning; this majority formula matches its
+                # internal one so "in cart" and "deadlocked" never disagree
+                # with each other on the same votes.
+                participant_count = max(len(room.get("participants", {})), 1)
+                majority = 1 if participant_count == 1 else max(2, (participant_count // 2) + 1)
                 if item_id not in room["cart"] and likes >= majority:
                     room["cart"].append(item_id)
                     if room.get("itinerary") and item_id not in room["occasion_tags"]:
@@ -690,29 +742,23 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                     profile[item["tag"]] = profile.get(item["tag"], 0.0) + (1.0 if reaction == "like" else -0.5)
                     save_users()
 
-            elif action == "break_tie":
+            elif action == "request_advice":
+                # Deliberately has NO effect on the cart. It stores a read and
+                # nothing else -- no add, no remove, no lock. The squad's votes
+                # remain the only thing that can actually move an item, which
+                # is the entire point of replacing the old "break_tie" action
+                # (see ai_coordinator.tie_break_advice()).
                 item_id = data["item_id"]
                 item = CATALOG_BY_ID.get(item_id)
-                if item:
-                    decision, verdict = reasoned_tie_break(item, room, CATALOG)
-                else:
-                    decision, verdict = random.random() < 0.5, "Coin flip -- item not found in catalog."
-                room["tie_breaks"][item_id] = "added" if decision else "skipped"
-                room.setdefault("tie_break_reasons", {})[item_id] = verdict
-                if decision and item_id not in room["cart"]:
-                    room["cart"].append(item_id)
-                    if room.get("itinerary") and item_id not in room["occasion_tags"] and item:
-                        inferred = infer_function_for_item(item, room["itinerary"])
-                        if inferred:
-                            room["occasion_tags"][item_id] = inferred
-                elif not decision and item_id in room["cart"]:
-                    room["cart"].remove(item_id)
+                if not item:
+                    continue
+                advice = tie_break_advice(item, room, CATALOG)
+                room.setdefault("tie_advice", {})[item_id] = advice
                 event = {
                     "name": name,
-                    "verb": "broke the tie on",
-                    "item": item["name"] if item else item_id,
-                    "outcome": room["tie_breaks"][item_id],
-                    "reason": verdict,
+                    "verb": "asked for a read on",
+                    "item": item["name"],
+                    "item_id": item_id,
                 }
 
             elif action == "assign":
@@ -756,8 +802,7 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                 room["assignments"].pop(item_id, None)
                 room["occasion_tags"].pop(item_id, None)
                 room["reactions"].pop(item_id, None)
-                room["tie_breaks"].pop(item_id, None)
-                room.get("tie_break_reasons", {}).pop(item_id, None)
+                room.get("tie_advice", {}).pop(item_id, None)
                 event = {
                     "name": name,
                     "verb": "removed",

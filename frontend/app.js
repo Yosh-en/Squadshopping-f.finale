@@ -18,12 +18,22 @@ const state = {
   knownCartIds: new Set(), hasInitializedCart: false,
   typingDebounceTimer: null, isCurrentlyTypingSignal: false,
   feedScores: {},
-  jumpToTieOnChatClose: false,
-  reopenRouletteAfterTie: false,
+  dismissedTieNudges: new Set(),
+  consideringOthers: [],
+  returnToCheckoutAfterJump: false,
   roulettePulsedCartIds: new Set(),
+  currentConsideringItemId: null,
 };
 const $ = s => document.querySelector(s);
 const $all = s => document.querySelectorAll(s);
+
+// Mirrors backend's main.py MAX_SQUAD_SIZE -- kept in sync manually, same
+// reasoning as OCCASION_TAGS/KEYWORD_TAG_RULES below. The backend's
+// websocket connect is the actually-authoritative cap (it closes the
+// socket with code 4008 if a genuinely new participant tries to join a
+// full squad); this copy is just so the join form can show a friendly
+// error immediately, before ever opening a socket.
+const MAX_SQUAD_SIZE = 6;
 
 const backMap = { 'screen-profile':'screen-home', 'screen-landing':'screen-profile', 'screen-room':'screen-landing', 'screen-checkout':'screen-room' };
 
@@ -33,6 +43,10 @@ function showScreen(id){
   $all('.nav-item').forEach(n=>n.classList.remove('active'));
   if(id === 'screen-home') $('#nav-home').classList.add('active');
   if(id === 'screen-landing') updateSquadResumeBanner();
+  if(id !== 'screen-room'){
+    state.returnToCheckoutAfterJump = false;
+  }
+  syncReturnToCheckoutBtn();
 
   if(id !== 'screen-room' && id !== 'screen-checkout' && state.chatOpen){
     closeChatDrawer();
@@ -283,6 +297,16 @@ $('#join-form').addEventListener('submit', async (e) => {
     $('#join-error').textContent = "Can't find that squad code -- double-check it.";
     return;
   }
+  // Friendly heads-up before ever opening a socket. The backend's websocket
+  // connect is still the real, authoritative cap enforcement (see
+  // main.py's MAX_SQUAD_SIZE) -- this is just so someone doesn't watch the
+  // screen switch to the room and then bounce straight back out.
+  const participantCount = Object.keys(data.participants || {}).length;
+  if(data.at_capacity || participantCount >= MAX_SQUAD_SIZE){
+    $('#join-error').textContent = `This squad's already got ${MAX_SQUAD_SIZE} people -- ask them to make room, or start your own squad instead.`;
+    return;
+  }
+  $('#join-error').textContent = '';
   enterRoom(code, name);
 });
 
@@ -306,8 +330,13 @@ function resetPerRoomState(){
   state.lastChatCount = 0;
   state.voiceMessages = [];
   state.feedScores = {};
-  state.jumpToTieOnChatClose = false;
-  state.reopenRouletteAfterTie = false;
+  state.dismissedTieNudges = new Set();
+  state.consideringOthers = [];
+  state.returnToCheckoutAfterJump = false;
+  const returnBtn = $('#return-to-checkout');
+  if(returnBtn) returnBtn.classList.remove('show');
+  const nudge = $('#tie-nudge-banner');
+  if(nudge) nudge.classList.remove('show');
   if(reservationTickInterval){ clearInterval(reservationTickInterval); reservationTickInterval = null; }
   toastQueue = [];
   toastCurrentlyShowing = false;
@@ -317,6 +346,7 @@ function resetPerRoomState(){
   state.rouletteLanded = false;
   state.roulettePulsedCartIds = new Set();
   state.pendingTieItemId = null;
+  state.currentConsideringItemId = null;
   cardSignatures = {};
   lastFilteredKey = null;
 
@@ -337,15 +367,16 @@ function resetPerRoomState(){
   renderTypingIndicator([]);
 }
 
-// Detaching onmessage/onopen BEFORE closing is what actually matters here --
-// without it, a message already in flight from the OLD room's socket could
-// still land and overwrite state.room with stale data even after close()
-// has been called, which is exactly what was causing squad #2 to visually
-// "snap back" to squad #1's content mid-demo.
+// Detaching onmessage/onopen/onclose BEFORE closing is what actually
+// matters here -- without it, a message already in flight from the OLD
+// room's socket could still land and overwrite state.room with stale data
+// even after close() has been called, which is exactly what was causing
+// squad #2 to visually "snap back" to squad #1's content mid-demo.
 function closeSocketIfOpen(){
   if(!state.ws) return;
   state.ws.onmessage = null;
   state.ws.onopen = null;
+  state.ws.onclose = null;
   try { state.ws.close(); } catch(e){}
   state.ws = null;
 }
@@ -392,6 +423,7 @@ function enterRoom(roomId, name){
       showCatchupBanner(msg.catchup);
     } else if (msg.type === 'typing') {
       renderTypingIndicator(msg.typers || [], msg.recorders || []);
+      renderConsideringBanner(msg.considering || []);
     }
     else if (msg.type === 'voice_chat') {
       if (msg.message) {
@@ -402,6 +434,21 @@ function enterRoom(roomId, name){
           $all('.unread-dot').forEach(d => d.classList.add('show'));
         }
       }
+    }
+  };
+  // Code 4008 is the backend's squad-full rejection (see main.py's
+  // websocket_endpoint) -- this only ever fires for a genuinely NEW
+  // participant hitting a squad already at MAX_SQUAD_SIZE at the exact
+  // moment they try to connect (the join-form pre-check above catches the
+  // common case; this is the race-condition backstop). Bounce back to
+  // landing with the same message rather than leaving them stuck on a
+  // room screen with a dead socket and no explanation.
+  ws.onclose = (evt) => {
+    if(evt.code === 4008 && state.roomId === roomId){
+      state.ws = null;
+      leaveRoom();
+      showScreen('screen-landing');
+      $('#join-error').textContent = `This squad's already got ${MAX_SQUAD_SIZE} people -- ask them to make room, or start your own squad instead.`;
     }
   };
   state.ws = ws;
@@ -416,16 +463,54 @@ function enterRoom(roomId, name){
 // ---- Product media (image or emoji fallback) ------------------------------
 function mediaHtml(item){
   if(!item || !item.image) return (item && item.emoji) || '';
+  return `<img class="media-img" loading="lazy" decoding="async" src="${escapeHtml(item.image)}" alt="${escapeHtml(item.name || '')}" data-emoji-fallback="${item.emoji || ''}" onerror="this.outerHTML=this.dataset.emojiFallback">`;
+}
 
-  const imageUrl = `${item.image}?v=2`;
+// ---- Shared vote-status logic (majority / deadlock), aware of squads
+// bigger than 2 people ------------------------------------------------------
+// Mirrors backend's ai_coordinator.vote_status() -- kept in sync manually,
+// same reasoning as OCCASION_TAGS/KEYWORD_TAG_RULES below.
+//
+// This replaces the old "any 2 conflicting votes = tied" check that used
+// to live inline wherever a card needed to know its own vote state. That
+// read was fine for a 2-person squad -- with nobody else who could ever
+// vote, any disagreement really was a permanent deadlock. But for a 3-5
+// person squad, 2 people disagreeing while the rest haven't voted yet is
+// just an in-progress read, not a real stall -- flagging it as a "tie"
+// would nag the squad into a coin-flip constantly instead of letting the
+// remaining votes actually settle it.
+//
+// "deadlocked" now only fires once EVERY participant has voted and it's an
+// exact 50/50 split -- which, by the math, is only even possible for an
+// even-sized squad. Odd-sized squads can never truly deadlock once
+// everyone's in: they either clear majority or they don't, cleanly.
+function computeVoteStatus(votes, participantCount){
+  const values = Object.values(votes || {});
+  const likes = values.filter(v => v === 'like').length;
+  const passes = values.filter(v => v === 'pass').length;
+  const voted = likes + passes;
+  const remaining = Math.max(0, participantCount - voted);
+  const majority = participantCount <= 1 ? 1 : Math.max(2, Math.floor(participantCount / 2) + 1);
 
-  return `<img class="media-img"
-    loading="lazy"
-    decoding="async"
-    src="${escapeHtml(imageUrl)}"
-    alt="${escapeHtml(item.name || '')}"
-    data-emoji-fallback="${item.emoji || ''}"
-    onerror="this.outerHTML=this.dataset.emojiFallback">`;
+  if(likes >= majority) return likes >= majority && passes > 0 ? 'contested_consensus' : 'consensus_like';
+  // ORDER MATTERS -- deadlock BEFORE rejected. An exact 50/50 split also
+  // can't reach majority, so testing 'rejected' first swallows every real
+  // tie (including the ordinary 1-1 in a 2-person squad) and the tie-breaker
+  // silently never gets offered. Mirrors the same ordering note in
+  // ai_coordinator.vote_status().
+  if(remaining === 0 && likes === passes && likes > 0) return 'deadlocked';
+  if(likes + remaining < majority) return 'rejected';
+  if(voted > 0) return 'in_progress';
+  return 'unvoted';
+}
+
+// participants (survives a disconnect), not members (live sockets only) --
+// the bar for consensus, and what counts as a genuine deadlock, shouldn't
+// shift just because someone's wifi blipped for a second. Mirrors the same
+// fallback used server-side in ai_coordinator.get_ai_suggestion().
+function participantCountOf(room){
+  const participants = room.participants || room.members || {};
+  return Object.keys(participants).length;
 }
 
 function rouletteSlotContent(item, room){
@@ -433,63 +518,67 @@ function rouletteSlotContent(item, room){
   const likeCount = Object.values(votes).filter(v => v === 'like').length;
   const myVote = votes[state.clientId];
   const inCart = room.cart.includes(item.id);
-  const tieOutcome = (room.tie_breaks || {})[item.id];
-  const isTied = !inCart && !tieOutcome &&
-    Object.values(votes).length >= 2 &&
-    new Set(Object.values(votes)).size > 1;
+  const advice = (room.tie_advice || {})[item.id];
+  const participantCount = participantCountOf(room);
+  const voteStatus = computeVoteStatus(votes, participantCount);
+  const isTied = !inCart && voteStatus === 'deadlocked';
 
   const discount = item.mrp
     ? Math.round((1 - item.price / item.mrp) * 100)
     : 0;
 
+  const rouletteVoteButtons = () => `
+    <div class="roulette-slot-actions">
+      <button
+        class="roulette-slot-btn pass ${myVote === 'pass' ? 'active' : ''}"
+        data-item="${item.id}"
+        data-reaction="pass">
+        ✕
+      </button>
+
+      <button
+        class="roulette-slot-btn like ${myVote === 'like' ? 'active' : ''}"
+        data-item="${item.id}"
+        data-reaction="like">
+        ♥
+      </button>
+    </div>`;
+
+  // Compact version of the shelf card's advisory footer -- a slot is far too
+  // narrow for the full for/against lists, so it shows the lean plus a tap
+  // through to chat. Same rule as everywhere else: advice never decides.
+  const rouletteAdviceHtml = () => advice
+    ? `<div class="roulette-slot-advice ${advice.verdict === 'yes' ? 'verdict-yes' : 'verdict-no'}">${advice.verdict === 'yes' ? '👍 Keep it' : '👎 Let it go'}<button class="roulette-slot-discuss-btn" data-discuss-item="${item.id}">💬 Discuss</button></div>`
+    : `<div class="roulette-slot-contested-actions"><button class="roulette-slot-discuss-btn" data-discuss-item="${item.id}">💬 Discuss</button><button class="roulette-slot-read-btn" data-advice-item="${item.id}">✦ My read</button></div>`;
+
   let footer;
 
   if(inCart){
-    footer = `<div class="roulette-slot-status added">✓ In cart</div>`;
-  } else if(tieOutcome){
-    footer = `
-      <div class="roulette-slot-status">
-        ${tieOutcome === 'added' ? '✓ Added' : '✕ Skipped'}
-      </div>`;
+    // Still open to votes, same reasoning as the main shelf card below --
+    // a majority got it here, but anyone who hasn't weighed in yet (or
+    // wants to change their mind) still can. This used to be a dead-end
+    // "✓ In cart" badge with no way for a late voter (the 3rd, 4th, 5th
+    // person to open the roulette) to register an opinion at all -- now
+    // it's exactly like every other undecided slot, just already carted.
+    const passCount = Object.values(votes).filter(v => v === 'pass').length;
+    if(passCount > 0){
+      // Same objection mechanic as the main shelf card -- a late dissent on
+      // a carted item stays in the cart on majority, but can be escalated
+      // to the real tie-breaker rather than counting for nothing.
+      footer = rouletteVoteButtons()
+        + `<div class="roulette-slot-status objected">⚠ ${likeCount}-${passCount}, objected</div>`
+        + rouletteAdviceHtml();
+    } else {
+      const remainingVoters = Math.max(0, participantCount - likeCount);
+      const waitNote = remainingVoters > 0
+        ? ` · ${remainingVoters} more welcome`
+        : '';
+      footer = rouletteVoteButtons() + `<div class="roulette-slot-status added">✓ In cart${waitNote}</div>`;
+    }
   } else if(isTied){
-    footer = `
-      <div class="roulette-slot-actions">
-        <button
-          class="roulette-slot-btn pass ${myVote === 'pass' ? 'active' : ''}"
-          data-item="${item.id}"
-          data-reaction="pass">
-          ✕
-        </button>
-
-        <button
-          class="roulette-slot-btn like ${myVote === 'like' ? 'active' : ''}"
-          data-item="${item.id}"
-          data-reaction="like">
-          ♥
-        </button>
-      </div>
-      <button class="roulette-slot-tie-btn" data-tie-item="${item.id}">
-        🎲 Tie
-      </button>`;
+    footer = rouletteVoteButtons() + rouletteAdviceHtml();
   } else {
-    footer = `
-      <div class="roulette-slot-actions">
-        <button
-          class="roulette-slot-btn pass ${myVote === 'pass' ? 'active' : ''}"
-          data-item="${item.id}"
-          data-reaction="pass">
-          ✕
-        </button>
-
-        <button
-          class="roulette-slot-btn like ${myVote === 'like' ? 'active' : ''}"
-          data-item="${item.id}"
-          data-reaction="like">
-          ♥
-        </button>
-      </div>
-      ${likeCount ? `<div class="roulette-slot-likes">${likeCount} liked</div>` : ''}
-    `;
+    footer = rouletteVoteButtons() + (likeCount ? `<div class="roulette-slot-likes">${likeCount} liked</div>` : '');
   }
 
   return `
@@ -552,8 +641,16 @@ function refreshRouletteSlots(){
 function send(action, payload={}){
   if(state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({action, ...payload}));
 }
-function react(itemId, reaction){ send('react', {item_id: itemId, reaction}); }
-function breakTie(itemId){ send('break_tie', {item_id: itemId}); }
+function react(itemId, reaction){
+  send('react', {item_id: itemId, reaction});
+  // Voting IS the decision, so you're no longer "looking at" it -- clear the
+  // signal rather than leaving the squad waiting on you for 60s of timeout.
+  if(state.currentConsideringItemId === itemId) updateConsideringSignal(null);
+}
+// Asks the AI for its read. Deliberately named for what it does -- it
+// requests advice and cannot change the cart. See tie_break_advice() in
+// ai_coordinator.py for why the AI no longer decides ties itself.
+function requestAdvice(itemId){ send('request_advice', {item_id: itemId}); }
 function toggleFinalize(){ send('finalize'); }
 
 let toastTimer = null;
@@ -634,12 +731,7 @@ function dismissCurrentToast(){
 $('#event-toast').addEventListener('click', (e) => {
   const itemId = e.currentTarget.dataset.jumpItem;
   if(!itemId){ dismissCurrentToast(); return; }
-  const card = document.querySelector(`[data-card="${itemId}"]`);
-  if(card){
-    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    card.classList.add('just-highlighted');
-    setTimeout(() => card.classList.remove('just-highlighted'), 1600);
-  }
+  jumpToItemCard(itemId);
   dismissCurrentToast();
 });
 
@@ -689,46 +781,91 @@ function formatWhen(iso){
 function cardHtml(item, room, isTopPick=false){
   const votes = room.reactions[item.id] || {};
   const likeCount = Object.values(votes).filter(v=>v==='like').length;
+  const passCount = Object.values(votes).filter(v=>v==='pass').length;
   const myVote = votes[state.clientId];
   const inCart = room.cart.includes(item.id);
   const discount = Math.round((1 - item.price / item.mrp) * 100);
   const justLaunched = ['p1','p4','p9','p13'].includes(item.id);
-  const tieOutcome = (room.tie_breaks || {})[item.id];
-  const tieReason = (room.tie_break_reasons || {})[item.id];
-  const isTied = !inCart && !tieOutcome && Object.values(votes).length >= 2 && new Set(Object.values(votes)).size > 1;
-  const needsMyVote = !isTied && !inCart && !tieOutcome && Object.keys(votes).length > 0 && myVote === undefined;
-  const iLikedIt = !isTied && !inCart && !tieOutcome && !needsMyVote && myVote === 'like';
+  // Advice the squad asked for on this item, if any. Note this NEVER locks
+  // an outcome -- unlike the old tie_breaks it replaced, a card with advice
+  // on it is still fully votable, because the squad is still the only thing
+  // that decides. See tie_break_advice() in ai_coordinator.py.
+  const advice = (room.tie_advice || {})[item.id];
+  const participantCount = participantCountOf(room);
+  const voteStatus = computeVoteStatus(votes, participantCount);
+  // A real deadlock now only means "everyone's voted, exact 50/50" -- see
+  // computeVoteStatus()'s comment above. Two people disagreeing while a
+  // 3rd/4th/5th person hasn't voted yet no longer trips this.
+  const isTied = !inCart && voteStatus === 'deadlocked';
+  const needsMyVote = !isTied && !inCart && Object.keys(votes).length > 0 && myVote === undefined;
+  const iLikedIt = !isTied && !inCart && !needsMyVote && myVote === 'like';
+  // Mixed votes that AREN'T a real deadlock yet -- just waiting on more
+  // people. Worth a quiet status line so the squad knows it's in-progress,
+  // not stuck, and can jump straight to a tie-break if they'd rather not wait.
+  const showProgress = !inCart && !isTied && voteStatus === 'in_progress' && likeCount > 0 && passCount > 0;
+  const stillWaitingOn = Math.max(0, participantCount - likeCount - passCount);
+
+  // Shared row of vote buttons -- used both for the normal undecided state
+  // AND, now, for an item that's already reached the cart. Previously the
+  // buttons vanished entirely the instant an item hit consensus, which
+  // meant anyone who hadn't voted yet (the 3rd, 4th, 5th person in a bigger
+  // squad) had no way to ever register an opinion, and their taste never
+  // reached the recommender. Voting after the fact can still pull an item
+  // back OUT of the cart if enough existing likes flip -- the backend
+  // recomputes majority on every vote regardless of current cart state.
+  const voteButtons = (extraClass = '') => `
+    <div class="card-actions ${extraClass}">
+      <button class="react-btn pass ${myVote==='pass' ? 'active' : ''}" data-item="${item.id}" data-reaction="pass">✕</button>
+      <span class="like-count">${likeCount ? likeCount + ' liked' : ''}</span>
+      <button class="react-btn like ${myVote==='like' ? 'active' : ''}" data-item="${item.id}" data-reaction="like">♥</button>
+    </div>`;
+
+  // How many participants haven't cast any vote at all yet on this item.
+  // An item can hit the cart on majority (e.g. 3 of 4) before the last
+  // person has voted -- their vote still counts (it's saved, and can still
+  // pull the item back out if an existing liker flips), it just can't be
+  // the deciding vote on its own once majority's mathematically locked in.
+  // This line is purely so that remaining voter can SEE their vote is still
+  // wanted, instead of the card silently reading as "already decided."
+  const votedCount = likeCount + passCount;
+  const remainingVoters = Math.max(0, participantCount - votedCount);
+  // A carted item somebody has voted AGAINST. Majority still rules (it stays
+  // in the cart -- one late objector shouldn't get a unilateral veto over
+  // four other people), but the objection is surfaced and can be escalated
+  // to the real tie-breaker, which genuinely can remove it. Without this, a
+  // late vote is arithmetically incapable of changing anything, which makes
+  // asking for it dishonest. See vote_status() in ai_coordinator.py.
+  const isContestedInCart = inCart && passCount > 0;
 
   let footer;
-  if(tieOutcome){
-    footer = `<div class="tie-outcome">🎲 ${escapeHtml(tieReason || (tieOutcome === 'added' ? 'Added to cart.' : 'Skipped.'))}</div>`;
+  if(isContestedInCart){
+    footer = voteButtons('cart-actions')
+      + `<div class="cart-objection-note">⚠ In the cart on a ${likeCount}-${passCount} majority -- ${passCount === 1 ? '1 person' : passCount + ' people'} objected</div>`
+      + (advice ? adviceHtml(advice, item.id) : contestedActionsHtml(item.id));
+  } else if(inCart){
+    const waitNote = remainingVoters > 0
+      ? ` · waiting on ${remainingVoters} more vote${remainingVoters === 1 ? '' : 's'}`
+      : '';
+    footer = voteButtons('cart-actions') + `<div class="cart-locked-note">✓ In squad cart${waitNote}</div>`;
   } else if(isTied){
-    // Talked it out and actually agree? Changing your own vote resolves this
-    // naturally, no AI needed -- "Break the Tie" stays available for genuine
-    // deadlock, but it's an option now, not the only door out. Kept as its
-    // own line below (not squeezed between the round vote buttons) so the
-    // normal vote row keeps the exact same rhythm as every other card.
-    footer = `
-      <div class="card-actions">
-        <button class="react-btn pass ${myVote==='pass' ? 'active' : ''}" data-item="${item.id}" data-reaction="pass">✕</button>
-        <span class="like-count">${likeCount ? likeCount + ' liked' : ''}</span>
-        <button class="react-btn like ${myVote==='like' ? 'active' : ''}" data-item="${item.id}" data-reaction="like">♥</button>
-      </div>
-      <button class="tie-btn" data-tie-item="${item.id}">🎲 Break the tie</button>`;
+    // Changing your own vote is still the natural resolution, and the vote
+    // row stays exactly where it is on every other card. Below it: chat
+    // (offered, never forced) and the AI's read (opt-in, advisory only).
+    // Nothing here can move the item on its own -- only votes do that.
+    footer = voteButtons()
+      + (advice ? adviceHtml(advice, item.id) : contestedActionsHtml(item.id));
   } else {
-    footer = `
-      <div class="card-actions">
-        <button class="react-btn pass ${myVote==='pass' ? 'active' : ''}" data-item="${item.id}" data-reaction="pass">✕</button>
-        <span class="like-count">${likeCount ? likeCount + ' liked' : ''}</span>
-        <button class="react-btn like ${myVote==='like' ? 'active' : ''}" data-item="${item.id}" data-reaction="like">♥</button>
-      </div>`;
+    footer = voteButtons() + (showProgress
+      ? `<div class="mixed-progress-note">${likeCount} liked, ${passCount} passed -- waiting on ${stillWaitingOn} more <button class="mini-tie-link" data-tie-item="${item.id}">settle now →</button></div>`
+      : '');
   }
 
   return `
-    <div class="card ${inCart ? 'in-cart' : ''} ${isTied ? 'tied' : ''} ${needsMyVote ? 'needs-vote' : ''} ${iLikedIt ? 'my-like' : ''}" data-card="${item.id}">
+    <div class="card ${inCart ? 'in-cart' : ''} ${isContestedInCart ? 'contested' : ''} ${isTied ? 'tied' : ''} ${needsMyVote ? 'needs-vote' : ''} ${iLikedIt ? 'my-like' : ''}" data-card="${item.id}">
       ${inCart ? '<span class="cart-badge">In squad cart</span>' : ''}
       ${!inCart && !isTied && !needsMyVote && !iLikedIt && isTopPick ? '<span class="top-pick-badge">✦ Top pick for you</span>' : ''}
       ${!inCart && justLaunched ? '<span class="launched-badge">Just Launched</span>' : ''}
+      ${isContestedInCart ? '<span class="objection-badge">⚠ Objected</span>' : ''}
       ${isTied ? '<span class="split-badge">Split vote</span>' : ''}
       ${needsMyVote ? '<span class="needs-vote-badge">Needs your vote</span>' : ''}
       ${iLikedIt ? '<span class="my-like-badge">♥ You liked this</span>' : ''}
@@ -748,6 +885,38 @@ function cardHtml(item, room, isTopPick=false){
   `;
 }
 
+// Renders the AI's read: a plain yes or no plus the one reason that decided
+// it. Went through two rounds of feedback to get here -- first it DECIDED for
+// the squad (rejected: an AI shouldn't overrule a deadlocked human vote), then
+// it showed a for/against table (rejected: a pros-and-cons list on a phone
+// card is homework, and nobody wants to adjudicate a spreadsheet). This keeps
+// the decisive shape of the original added/skipped while the squad's votes
+// stay the only thing that can actually move the item.
+function adviceHtml(advice, itemId){
+  if(!advice) return '';
+  const yes = advice.verdict === 'yes';
+  return `
+    <div class="advice-panel ${yes ? 'verdict-yes' : 'verdict-no'}">
+      <div class="advice-verdict">${yes ? '👍' : '👎'} ${escapeHtml(advice.headline || '')}</div>
+      <div class="advice-reason">${escapeHtml(advice.reason || '')}</div>
+      <div class="advice-footer">Still your call -- vote above.</div>
+      <button class="advice-chat-btn" data-discuss-item="${itemId}">💬 Discuss in chat</button>
+    </div>`;
+}
+
+// The two buttons a contested card offers when no advice has been asked for
+// yet. Chat comes FIRST and is styled as the primary option: user feedback
+// was blunt that having chat forced open on a tie felt like a slap, but that
+// discussion is still what they actually want -- so it's offered, prominently,
+// rather than imposed.
+function contestedActionsHtml(itemId){
+  return `
+    <div class="contested-actions">
+      <button class="discuss-btn" data-discuss-item="${itemId}">💬 Discuss in chat</button>
+      <button class="get-read-btn" data-advice-item="${itemId}">✦ Get my read</button>
+    </div>`;
+}
+
 function matchesSearch(item, term){
   if(!term) return true;
   const hay = `${item.name} ${item.brand} ${item.tag} ${item.category||''}`.toLowerCase();
@@ -762,8 +931,12 @@ $('#product-search').addEventListener('input', (e) => {
 $('#product-grid').addEventListener('click', (e) => {
   const reactBtn = e.target.closest('.react-btn');
   if(reactBtn){ react(reactBtn.dataset.item, reactBtn.dataset.reaction); return; }
-  const tieBtn = e.target.closest('.tie-btn');
-  if(tieBtn){ breakTie(tieBtn.dataset.tieItem); return; }
+  const adviceBtn = e.target.closest('[data-advice-item]');
+  if(adviceBtn){ requestAdvice(adviceBtn.dataset.adviceItem); return; }
+  const miniAdvice = e.target.closest('.mini-tie-link');
+  if(miniAdvice){ requestAdvice(miniAdvice.dataset.tieItem); return; }
+  const discussBtn = e.target.closest('[data-discuss-item]');
+  if(discussBtn){ openChatForItem(discussBtn.dataset.discussItem); return; }
 });
 
 const OCCASION_TAGS = {
@@ -844,7 +1017,7 @@ function cardSignature(item, room, isTopPick=false){
   return JSON.stringify([
     room.reactions[item.id] || {},
     room.cart.includes(item.id),
-    (room.tie_breaks || {})[item.id] || null,
+    !!(room.tie_advice || {})[item.id],
     isTopPick,
   ]);
 }
@@ -859,7 +1032,7 @@ function topPickId(items, room){
   let bestId = null, bestScore = -Infinity;
   for(const item of items){
     if(room.cart.includes(item.id)) continue;
-    if((room.tie_breaks || {})[item.id]) continue;
+
     if((room.reactions[item.id] || {})[state.clientId] !== undefined) continue;
     const score = state.feedScores[item.id] ?? -Infinity;
     if(score > bestScore){ bestScore = score; bestId = item.id; }
@@ -1020,7 +1193,15 @@ function render(){
     avatarHtml(cid, n)
   ).join('');
   const totalCount = Object.keys(participants).length;
-  $('#member-count').textContent = totalCount === 1 ? '1 in squad' : `${totalCount} in squad`;
+  // Deliberately NOT "4/6 in squad" -- a bare fraction reads like a target to
+  // fill and puts a limit in your face for no reason. Plain count, and the cap
+  // only ever mentioned as remaining room (or once it's actually reached,
+  // which is the one moment it genuinely matters).
+  const spotsLeft = MAX_SQUAD_SIZE - totalCount;
+  const countLabel = totalCount === 1 ? '1 in squad' : `${totalCount} in squad`;
+  $('#member-count').textContent = spotsLeft > 0
+    ? `${countLabel} · room for ${spotsLeft} more`
+    : `${countLabel} · squad's full`;
 
   $('#ai-note').textContent = state.aiNote || '';
 
@@ -1053,71 +1234,167 @@ function render(){
 }
 
 function getTiedIds(room){
-  const majority = Math.max(2, Math.floor(Object.keys(room.members).length / 2) + 1);
+  const participantCount = participantCountOf(room);
   return state.catalog
     .filter(item => {
       if(room.cart.includes(item.id)) return false;
-      if((room.tie_breaks || {})[item.id]) return false;
-      const votes = Object.values(room.reactions[item.id] || {});
-      return votes.length >= 2 && new Set(votes).size > 1;
+      const votes = room.reactions[item.id] || {};
+      // Real deadlock only -- see computeVoteStatus()'s comment above for
+      // why "any 2 conflicting votes" stopped being a correct definition
+      // once a squad can be 3-5 people, not just 2.
+      return computeVoteStatus(votes, participantCount) === 'deadlocked';
     })
     .map(item => item.id);
 }
 
 function needsMyAttention(item, room){
   if(room.cart.includes(item.id)) return false;
-  if((room.tie_breaks || {})[item.id]) return false;
   const votes = room.reactions[item.id] || {};
   if(!Object.keys(votes).length) return false;
-  const isTied = Object.keys(votes).length >= 2 && new Set(Object.values(votes)).size > 1;
+  const participantCount = participantCountOf(room);
+  const isTied = computeVoteStatus(votes, participantCount) === 'deadlocked';
   if(isTied) return true;
   return !(state.clientId in votes);
 }
 
-function hideRouletteModalForTie(){
-  $('#roulette-modal').classList.remove('show');
-}
-function reopenRouletteModal(){
-  if(!state.rouletteItemIds || !state.rouletteLanded) return;
-  $('#roulette-modal').classList.add('show');
-  refreshRouletteSlots();
-}
-
-function jumpToItemCard(itemId){
+// Takes you straight to a card, reliably. Two things used to make this fail
+// silently: an active search filter meaning the card simply wasn't in the DOM,
+// and scrolling before the freshly-switched screen had laid out. Both are
+// handled here, so "tap to view" always actually lands you on the item.
+function jumpToItemCard(itemId, opts = {}){
   if(!itemId) return;
+
+  // A search filter can hide the very card we're jumping to. Clear it and
+  // re-render first, or the querySelector below finds nothing and the tap
+  // appears to do nothing at all.
+  const stillFiltered = !document.querySelector(`[data-card="${itemId}"]`);
+  if(stillFiltered && state.searchTerm){
+    state.searchTerm = '';
+    const searchInput = $('#product-search');
+    if(searchInput) searchInput.value = '';
+    if(state.room && state.catalog.length) render();
+  }
+
+  if(opts.fromCheckout){
+    state.returnToCheckoutAfterJump = true;
+  }
   showScreen('screen-room');
-  const card = document.querySelector(`[data-card="${itemId}"]`);
-  if(!card) return;
-  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  card.classList.add('just-highlighted');
-  setTimeout(() => card.classList.remove('just-highlighted'), 1600);
+  syncReturnToCheckoutBtn();
+
+  // Two frames: one for the screen swap to apply, one for layout to settle,
+  // so scrollIntoView measures against the real position rather than a
+  // display:none-to-flex transition mid-flight.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const card = document.querySelector(`[data-card="${itemId}"]`);
+    if(!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.remove('just-highlighted');
+    requestAnimationFrame(() => card.classList.add('just-highlighted'));
+    setTimeout(() => card.classList.remove('just-highlighted'), 1600);
+  }));
 }
 
+// A one-tap way back to checkout for anyone who jumped out of it to look at a
+// recommendation -- particularly someone mid-payment, who shouldn't have to
+// navigate back through the landing screen. Nothing is lost either way:
+// payment state lives on the server, not in this screen.
+function syncReturnToCheckoutBtn(){
+  const btn = $('#return-to-checkout');
+  if(!btn) return;
+  const roomActive = $('#screen-room').classList.contains('active');
+  btn.classList.toggle('show', !!state.returnToCheckoutAfterJump && roomActive);
+}
+
+$('#return-to-checkout').addEventListener('click', () => {
+  state.returnToCheckoutAfterJump = false;
+  // Leaving the item behind means you're no longer looking at it, so stop
+  // telling the squad that you are.
+  updateConsideringSignal(null);
+  showScreen('screen-checkout');
+  syncReturnToCheckoutBtn();
+});
+
+// A tie used to force the chat drawer open (and a modal on top of it, the
+// first time). Direct user feedback: that landed "like a slap in the face" --
+// it hijacked the screen mid-swipe and made a disagreement feel like a
+// reprimand. So nothing opens itself anymore. Instead an inline, dismissible
+// banner appears at the top of the room, chat is offered as a clearly-labelled
+// button (on the banner AND on the card itself), and the chat button gets its
+// unread dot so it's visibly the place to go. The squad chooses to open it.
 function announceTie(itemId){
   state.pendingTieItemId = itemId;
-  state.jumpToTieOnChatClose = true;
-
-  const rouletteWasOpen = $('#roulette-modal').classList.contains('show');
-  if(rouletteWasOpen){
-    hideRouletteModalForTie();
-  }
-  state.reopenRouletteAfterTie = rouletteWasOpen && !!state.rouletteItemIds;
-
-  if(!state.tieExplainerShown){
-    $('#tie-explainer').classList.add('show');
-    state.tieExplainerShown = true;
-  }
+  if(state.dismissedTieNudges.has(itemId)) return;
 
   const item = state.catalog.find(i => i.id === itemId);
+  const itemName = item ? item.name : 'an item';
+  const banner = $('#tie-nudge-banner');
+  if(!banner) return;
+  banner.dataset.tieItem = itemId;
+  banner.innerHTML = `
+    <div class="tie-nudge-text">
+      <span class="tie-nudge-title">⚖️ Squad's split on ${escapeHtml(itemName)}</span>
+      <span class="tie-nudge-sub">Talk it out, or get my read -- either way, the call's yours. <button type="button" class="tie-nudge-how" data-tie-how="1">How do ties work?</button></span>
+    </div>
+    <div class="tie-nudge-actions">
+      <button type="button" class="tie-nudge-chat-btn" data-discuss-item="${itemId}">💬 Discuss</button>
+      <button type="button" class="tie-nudge-jump-btn" data-tie-jump="${itemId}">See item</button>
+    </div>
+    <button type="button" class="tie-nudge-close" data-tie-dismiss="${itemId}" aria-label="Dismiss">✕</button>`;
+  banner.classList.add('show');
+
+  // A quiet signal that chat is where this gets resolved, without taking
+  // over the screen -- same dot the app already uses for unread messages.
+  $all('.unread-dot').forEach(d => d.classList.add('show'));
+}
+
+$('#tie-nudge-banner').addEventListener('click', (e) => {
+  // The explainer is opt-in now. It used to auto-show as a full modal on the
+  // first tie of a session, on top of the force-opened chat -- two
+  // interruptions stacked on one disagreement.
+  if(e.target.closest('[data-tie-how]')){
+    $('#tie-explainer').classList.add('show');
+    state.tieExplainerShown = true;
+    return;
+  }
+  const dismissId = e.target.closest('[data-tie-dismiss]')?.dataset.tieDismiss;
+  if(dismissId){
+    // Remembered per item, so a dismissed nudge doesn't pop straight back on
+    // the next state broadcast (which arrives on literally every vote).
+    state.dismissedTieNudges.add(dismissId);
+    $('#tie-nudge-banner').classList.remove('show');
+    return;
+  }
+  const discussId = e.target.closest('[data-discuss-item]')?.dataset.discussItem;
+  if(discussId){
+    state.dismissedTieNudges.add(discussId);
+    $('#tie-nudge-banner').classList.remove('show');
+    openChatForItem(discussId);
+    return;
+  }
+  const jumpId = e.target.closest('[data-tie-jump]')?.dataset.tieJump;
+  if(jumpId){
+    state.dismissedTieNudges.add(jumpId);
+    $('#tie-nudge-banner').classList.remove('show');
+    jumpToItemCard(jumpId);
+  }
+});
+
+// Opens chat WITH context about which item is being discussed -- always
+// user-initiated (a tapped button), never automatic.
+function openChatForItem(itemId){
+  const item = state.catalog.find(i => i.id === itemId);
   const note = $('#chat-context-note');
-  note.innerHTML = `⚖️ Squad split on "${escapeHtml(item ? item.name : 'an item')}" -- talk it through here. <button type="button" id="chat-jump-to-tie" class="chat-jump-btn">Jump to item</button>`;
+  note.innerHTML = `⚖️ Talking through "${escapeHtml(item ? item.name : 'an item')}" -- whatever you land on, change your votes on the card to make it stick. <button type="button" id="chat-jump-to-tie" class="chat-jump-btn">Jump to item</button>`;
   note.style.display = 'block';
+  note.dataset.tieItem = itemId;
   openChatDrawer();
 }
 
 $('#chat-context-note').addEventListener('click', (e) => {
   if(!e.target.closest('#chat-jump-to-tie')) return;
+  const itemId = $('#chat-context-note').dataset.tieItem;
   closeChatDrawer();
+  if(itemId) jumpToItemCard(itemId);
 });
 
 function detectNewTies(room){
@@ -1142,57 +1419,57 @@ function openChatDrawer(){
   $all('.unread-dot').forEach(d => d.classList.remove('show'));
   state.lastChatCount = (state.room.chat || []).length;
 }
+// No longer performs surprise navigation on close. It used to auto-jump to
+// the tied card (or reopen the roulette), which meant closing chat could
+// teleport you somewhere you didn't ask to go -- part of the same "stop
+// hijacking the screen" fix as announceTie() above. Jumping is now only ever
+// an explicit tap on "Jump to item".
 function closeChatDrawer(){
   state.chatOpen = false;
   $('#chat-drawer').classList.remove('open');
-  if(state.jumpToTieOnChatClose){
-    state.jumpToTieOnChatClose = false;
-    if(state.reopenRouletteAfterTie){
-      state.reopenRouletteAfterTie = false;
-      reopenRouletteModal();
-    } else {
-      jumpToItemCard(state.pendingTieItemId);
-    }
-  }
 }
 $('#chat-drawer').addEventListener('click', (e) => {
   if(e.target.id === 'chat-drawer') closeChatDrawer();
 });
 
 function renderChat(room) {
-  const messages = room.chat || [];
+  const textMessages = (room.chat || []).map((m, i) => ({ ...m, kind: 'text', ts: m.ts ?? 0, order: i }));
+  const voiceMessages = state.voiceMessages.map((m, i) => ({ ...m, kind: 'voice', ts: m.ts ?? 0, order: 1e9 + i }));
+  // Merged and sorted by actual send time -- previously voice messages were
+  // always appended after every text message regardless of when they were
+  // actually sent, which is exactly what caused a reply to visually land
+  // above the voice note it was replying to. `order` is just a stable
+  // tiebreak for messages sent before this fix existed (no real timestamp
+  // yet), so they don't get shuffled relative to each other.
+  const merged = [...textMessages, ...voiceMessages].sort((a, b) => (a.ts - b.ts) || (a.order - b.order));
+
   const list = $('#chat-messages');
+  list.innerHTML = '';
 
-  list.innerHTML = messages.map(m => `
-    <div class="chat-msg ${m.name === state.name ? 'me' : 'them'}">
-      <div class="who">${escapeHtml(m.name)}</div>
-      <div>${escapeHtml(m.text)}</div>
-    </div>
-  `).join('');
-
-  // Add live voice messages.
-  state.voiceMessages.forEach(m => {
-    const wrapper = document.createElement('div');
-
-    wrapper.className = `chat-msg chat-audio-msg ${m.name === state.name ? 'me' : 'them'
-      }`;
-
-    const who = document.createElement('div');
-    who.className = 'who';
-    who.textContent = m.name;
-
-    const audio = document.createElement('audio');
-    audio.controls = true;
-    audio.preload = 'metadata';
-    audio.src = m.audio;
-
-    wrapper.appendChild(who);
-    wrapper.appendChild(audio);
-
-    list.appendChild(wrapper);
+  merged.forEach(m => {
+    const isMe = m.name === state.name;
+    if(m.kind === 'text'){
+      const div = document.createElement('div');
+      div.className = `chat-msg ${isMe ? 'me' : 'them'}`;
+      div.innerHTML = `<div class="who">${escapeHtml(m.name)}</div><div>${escapeHtml(m.text)}</div>`;
+      list.appendChild(div);
+    } else {
+      const wrapper = document.createElement('div');
+      wrapper.className = `chat-msg chat-audio-msg ${isMe ? 'me' : 'them'}`;
+      const who = document.createElement('div');
+      who.className = 'who';
+      who.textContent = m.name;
+      const audio = document.createElement('audio');
+      audio.controls = true;
+      audio.preload = 'metadata';
+      audio.src = m.audio;
+      wrapper.appendChild(who);
+      wrapper.appendChild(audio);
+      list.appendChild(wrapper);
+    }
   });
 
-  if (!messages.length && !state.voiceMessages.length) {
+  if (!merged.length) {
     list.innerHTML = `
       <div class="empty-note" style="padding:20px 8px;">
         No messages yet -- say hi 👋
@@ -1202,8 +1479,8 @@ function renderChat(room) {
 
   if (state.chatOpen) {
     list.scrollTop = list.scrollHeight;
-    state.lastChatCount = messages.length;
-  } else if (messages.length > state.lastChatCount) {
+    state.lastChatCount = (room.chat || []).length;
+  } else if ((room.chat || []).length > state.lastChatCount) {
     $all('.unread-dot').forEach(d => d.classList.add('show'));
   }
 }
@@ -1219,6 +1496,22 @@ $('#chat-input').addEventListener('input', () => {
     send('typing_stop');
   }, 2500);
 });
+
+// Who else is actively LOOKING at the recommended add-on right now. Stored in
+// state and rendered inside the recommendation card itself rather than as its
+// own separate banner -- two stacked banners saying related things crowded the
+// checkout screen, and the standalone one couldn't say WHICH item or offer to
+// take you there.
+function renderConsideringBanner(considering){
+  state.consideringOthers = (considering || []).filter(c => c.name !== state.name);
+  // Re-render just the reco card, not the whole screen: this arrives on a
+  // typing-channel broadcast, which is high-frequency and must never trigger
+  // a full render or a disk save.
+  if(state.room && state.catalog.length){
+    const cartItems = state.room.cart.map(id => state.catalog.find(c => c.id === id)).filter(Boolean);
+    renderOutfitGapNudge(cartItems, state.room);
+  }
+}
 
 function renderTypingIndicator(typers, recorders=[]) {
   const otherTypers = typers.filter(n => n !== state.name);
@@ -1534,6 +1827,34 @@ function renderValidatedBanner(cartItems, room){
   `;
 }
 
+// Picks the actual best-scoring candidate for a missing category, using the
+// same live feedScores the shelf itself is ranked by -- so the number this
+// card shows is never invented, it's whatever the recommender genuinely
+// ranks highest right now.
+function bestCandidateForCategory(category){
+  const dismissed = new Set(state.room.dismissed_recommendations || []);
+  let best = null, bestScore = -Infinity;
+  for(const item of state.catalog){
+    if(item.category !== category) continue;
+    if(state.room.cart.includes(item.id)) continue;
+    if(dismissed.has(item.id)) continue;
+    const score = state.feedScores[item.id] ?? -Infinity;
+    if(score > bestScore){ bestScore = score; best = item; }
+  }
+  return best;
+}
+
+// Tells the rest of the squad what you're currently looking at, same
+// lifecycle as the typing/recording indicators -- so nobody pays mid-
+// decision without knowing an add-on is actively being considered. Only
+// sends start/stop on an actual change, not on every render.
+function updateConsideringSignal(candidateId, itemName){
+  if(candidateId === state.currentConsideringItemId) return;
+  if(state.currentConsideringItemId) send('considering_item_stop');
+  state.currentConsideringItemId = candidateId;
+  if(candidateId) send('considering_item_start', { item_id: candidateId, item_name: itemName });
+}
+
 function renderOutfitGapNudge(cartItems, room){
   const el = $('#outfit-gap-nudge');
   if(!cartItems.length){ el.style.display = 'none'; return; }
@@ -1542,23 +1863,86 @@ function renderOutfitGapNudge(cartItems, room){
   const hasFootwear = cartItems.some(i => i.category === FOOTWEAR);
   const hasAccessory = cartItems.some(i => i.category === ACCESSORY);
   if(!hasGarment){ el.style.display = 'none'; return; }
-  const missing = [];
-  if(!hasFootwear) missing.push('footwear');
-  if(!hasAccessory) missing.push('accessories');
-  if(!missing.length){ el.style.display = 'none'; return; }
+
+  const missingCategory = !hasFootwear ? FOOTWEAR : (!hasAccessory ? ACCESSORY : null);
+  if(!missingCategory){ el.style.display = 'none'; return; }
+
+  const candidate = bestCandidateForCategory(missingCategory);
+  if(!candidate){ el.style.display = 'none'; return; }
+
+  const cartTotal = cartItems.reduce((s, i) => s + i.price, 0);
+  const budget = room.budget || 0;
+  const remainingAfter = budget - (cartTotal + candidate.price);
+  const budgetLine = budget
+    ? (remainingAfter >= 0
+        ? `Adding this keeps the squad ₹${remainingAfter} under budget.`
+        : `Adding this would put the squad ₹${Math.abs(remainingAfter)} over budget.`)
+    : '';
+
+  // The decision itself only ever happens once, on the real shelf card (via
+  // "View item"), never duplicated here -- that duplication is what made
+  // liking from this card feel like it did nothing.
+  const myVote = (room.reactions[candidate.id] || {})[state.clientId];
+  let statusHtml = '';
+  if(myVote === 'like'){
+    statusHtml = `<div class="reco-card-status">✓ You liked this -- waiting on the rest of the squad.</div>`;
+  } else if(myVote === 'pass'){
+    statusHtml = `<div class="reco-card-status">You passed on this.</div>`;
+  }
+
+  // Who else is looking at THIS item right now, folded into the same card
+  // instead of a second banner. Only ever populated by someone actually
+  // tapping "View item" (see updateConsideringSignal) -- it used to fire for
+  // anyone merely sitting on the checkout screen, which is why three people
+  // saw "3 members are considering add-ons" when nobody had tapped anything.
+  const lookers = (state.consideringOthers || []).filter(c => c.item_id === candidate.id);
+  let lookerHtml = '';
+  if(lookers.length){
+    const names = lookers.length === 1
+      ? `${lookers[0].name}'s`
+      : `${lookers.length} of the squad are`;
+    lookerHtml = `
+      <div class="reco-card-looker">
+        <span>👀 ${escapeHtml(names)} looking at this${lookers.length === 1 ? '' : ''}</span>
+        <button type="button" class="reco-looker-jump" data-view-reco="${candidate.id}">Jump there</button>
+      </div>`;
+  }
+
   el.style.display = 'block';
-  el.dataset.jumpSearch = missing[0];
-  el.innerHTML = `👟 Your ${escapeHtml(room.occasion)} look is missing ${missing.join(' and ')} -- want to browse those next? <span class="outfit-gap-link">Browse ${escapeHtml(missing[0])} →</span>`;
+  el.innerHTML = `
+    <div class="reco-card-header">👟 Your ${escapeHtml(room.occasion)} look is missing ${missingCategory.toLowerCase()}</div>
+    <div class="reco-card-info">
+      <div class="reco-card-name">${escapeHtml(candidate.brand)} -- ${escapeHtml(candidate.name)} · ₹${candidate.price}</div>
+      ${budgetLine ? `<div class="reco-card-budget-line">${escapeHtml(budgetLine)}</div>` : ''}
+      ${lookerHtml}
+      <div class="reco-card-actions">
+        <button type="button" class="reco-card-view-btn" data-view-reco="${candidate.id}">View item →</button>
+        <button type="button" class="reco-card-dismiss-link" data-dismiss-reco="${candidate.id}">Not interested</button>
+      </div>
+      ${statusHtml}
+    </div>`;
 }
 
 $('#outfit-gap-nudge').addEventListener('click', (e) => {
-  const term = e.currentTarget.dataset.jumpSearch;
-  if(!term) return;
-  showScreen('screen-room');
-  state.searchTerm = term;
-  const searchInput = $('#product-search');
-  if(searchInput) searchInput.value = term;
-  render();
+  const viewId = e.target.closest('[data-view-reco]')?.dataset.viewReco;
+  if(viewId){
+    // THIS is the only thing that tells the squad you're looking -- an
+    // explicit tap, not the mere act of being on this screen.
+    const item = state.catalog.find(i => i.id === viewId);
+    updateConsideringSignal(viewId, item ? `${item.brand} ${item.name}` : 'an item');
+    // Remember where they came from so they can get back to checkout in one
+    // tap -- someone part-way through paying shouldn't have to hunt for it.
+    jumpToItemCard(viewId, { fromCheckout: true });
+    return;
+  }
+  const dismissId = e.target.closest('[data-dismiss-reco]')?.dataset.dismissReco;
+  if(dismissId){
+    // Shared, not local -- a dismissal has to be visible to the whole
+    // squad, or the two of you end up looking at two different cards
+    // without realizing it.
+    send('dismiss_recommendation', { item_id: dismissId });
+    updateConsideringSignal(null);
+  }
 });
 
 $('#finalize-btn').addEventListener('click', () => {
@@ -1855,8 +2239,17 @@ $('#roulette-done-btn').addEventListener('click', closeRouletteModal);
 $('#roulette-reel').addEventListener('click', (e) => {
   const reactBtn = e.target.closest('.roulette-slot-btn');
   if(reactBtn){ react(reactBtn.dataset.item, reactBtn.dataset.reaction); return; }
-  const tieBtn = e.target.closest('.roulette-slot-tie-btn');
-  if(tieBtn){ breakTie(tieBtn.dataset.tieItem); return; }
+  const adviceBtn = e.target.closest('[data-advice-item]');
+  if(adviceBtn){ requestAdvice(adviceBtn.dataset.adviceItem); return; }
+  const discussBtn = e.target.closest('[data-discuss-item]');
+  if(discussBtn){
+    // Close the roulette first -- opening chat on top of it would stack two
+    // overlays. Reopening afterwards is deliberately NOT automatic; the
+    // roulette button is right there if they want another spin.
+    closeRouletteModal();
+    openChatForItem(discussBtn.dataset.discussItem);
+    return;
+  }
 });
 
 $('#checkout-items').addEventListener('click', (e) => {
