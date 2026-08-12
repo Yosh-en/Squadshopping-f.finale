@@ -318,7 +318,13 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
             if season:
                 base += f" {season['label'].capitalize()}-friendly picks are bumped up within each section too."
             return base
-        base = f"Planning for {occasion}? Start swiping and I'll spot the pattern as votes come in."
+        if occasion == "Just Browsing":
+            # No baseline tags at all for this one, on purpose -- so the
+            # honest thing to say is exactly that, rather than a redundant
+            # echo of the occasion header sitting right above this bar.
+            base = "No occasion set, so I've got no baseline yet -- I'll watch what you two actually gravitate toward as you swipe."
+        else:
+            base = f"Tracking your squad's picks against {occasion} -- swipe a few and I'll flag where you agree."
         if season:
             tag_str = " / ".join(season["tags"])
             base = f"{occasion} lands in {season['label']} -- keep an eye out for '{tag_str}' pieces. Start swiping and I'll track where the squad actually lands."
