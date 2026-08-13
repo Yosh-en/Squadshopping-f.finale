@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import random
 import string
 import time
@@ -15,6 +16,8 @@ from pydantic import BaseModel
 
 from ai_coordinator import (
     get_ai_suggestion,
+    relevant_category_ids,
+    parse_ai_chat_intent,
     infer_function_for_item,
     tie_break_advice,
     pick_surprise_items,
@@ -28,6 +31,20 @@ CATALOG = json.loads((BASE_DIR / "catalog.json").read_text(encoding="utf-8"))
 CATALOG_BY_ID = {item["id"]: item for item in CATALOG}
 
 app = FastAPI(title="Shop Together (Myntra Hackathon MVP)")
+
+
+@app.on_event("startup")
+async def _start_maintenance():
+    prune_rooms()  # clear out anything dead left over from the last run
+    asyncio.create_task(_background_maintenance())
+
+
+@app.on_event("shutdown")
+async def _flush_on_shutdown():
+    # A clean shutdown (redeploy, Ctrl-C) should never lose the last few
+    # seconds of votes just because they were still sitting behind the
+    # flush interval.
+    _write_rooms_now()
 
 # Hard cap on squad size. Nothing in the logic assumes a specific number --
 # the majority formula, vote_status()'s deadlock/objection detection, the
@@ -54,11 +71,125 @@ def load_rooms() -> Dict[str, dict]:
     return {}
 
 
-def save_rooms():
+def _write_rooms_now():
+    """Atomic write: full file to a temp path, then one rename.
+
+    write_text() truncates the real file first and then streams into it, so a
+    crash, redeploy, or container eviction partway through leaves a truncated
+    file. load_rooms() can't parse that, swallows the JSONDecodeError, and
+    returns {} -- silently destroying EVERY squad's state, not just the one
+    being written. os.replace is atomic on the same filesystem, so readers
+    only ever see a complete old file or a complete new one.
+    """
     try:
-        ROOMS_FILE.write_text(json.dumps(rooms), encoding="utf-8")
+        tmp = ROOMS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(rooms), encoding="utf-8")
+        os.replace(tmp, ROOMS_FILE)
     except OSError:
         pass
+
+
+_rooms_dirty = False
+
+
+def save_rooms():
+    """Marks state as needing a flush, instead of writing immediately.
+
+    This is called on every broadcast -- i.e. every single vote, from every
+    squad. The old version serialised the ENTIRE rooms dict and did a full
+    synchronous disk write each time, on the event loop. Since rooms are
+    long-lived and (before prune_rooms below) were never deleted, that cost
+    grew all day: measured at ~0.7ms with 10 squads but ~26ms with 400, and
+    every one of those milliseconds blocks the single uvicorn worker for
+    EVERYONE, not just the person who voted. A busy afternoon would have
+    degraded into visible lag on every tap, with nothing in the logs to
+    explain it.
+
+    Durability cost is deliberate and small: at worst FLUSH_INTERVAL_SECONDS
+    of votes are lost if the process is killed uncleanly. Everyone's browser
+    still holds current state and reconnects, and a hard kill mid-demo is
+    already a restart-and-rejoin situation.
+    """
+    global _rooms_dirty
+    _rooms_dirty = True
+
+
+MAX_ACTIVITY_LOG = 300
+MAX_CHAT_MESSAGES = 200
+FLUSH_INTERVAL_SECONDS = 3
+PRUNE_INTERVAL_SECONDS = 600
+# An abandoned room is one created (usually by someone poking at the QR link)
+# that nobody ever actually joined. Those pile up fastest and are worth
+# nothing. A finished room has a completed order and is kept long enough to
+# stay reachable right after checkout, but not forever.
+ABANDONED_ROOM_SECONDS = 3600           # 1 hour, never joined
+FINISHED_ROOM_SECONDS = 24 * 3600       # 24 hours after everyone paid
+
+
+def room_last_activity(room: dict) -> float:
+    """Best available "when was this touched" timestamp, newest wins."""
+    stamps = [room.get("created_at") or 0]
+    log = room.get("activity_log") or []
+    if log:
+        stamps.append(log[-1].get("ts", 0))
+    seen = room.get("member_last_seen") or {}
+    if seen:
+        stamps.append(max(seen.values()))
+    chat = room.get("chat") or []
+    if chat:
+        stamps.append(chat[-1].get("ts", 0))
+    return max(stamps)
+
+
+def prune_rooms():
+    """Drops rooms that can't matter to anyone anymore.
+
+    Deliberately conservative: a room with ANY participant and no completed
+    order is never touched, however old, because someone may genuinely come
+    back to it. Only clearly-dead rooms go -- created-but-never-joined, or
+    fully paid and a day old. Without this, rooms_state.json grows for the
+    lifetime of the process and every save gets slower for everyone.
+    """
+    now = time.time()
+    doomed = []
+    for code, room in rooms.items():
+        # Never prune a room someone is connected to RIGHT NOW, regardless of
+        # what the timestamps say -- this is the one mistake here that would
+        # be catastrophic and invisible.
+        if manager.active.get(code):
+            continue
+        age = now - room_last_activity(room)
+        never_joined = not room.get("participants")
+        finished = room.get("session_number") is not None
+        if never_joined and age > ABANDONED_ROOM_SECONDS:
+            doomed.append(code)
+        elif finished and age > FINISHED_ROOM_SECONDS:
+            doomed.append(code)
+    for code in doomed:
+        rooms.pop(code, None)
+    if doomed:
+        print(f"[prune] removed {len(doomed)} dead room(s), {len(rooms)} remain")
+        save_rooms()
+
+
+async def _background_maintenance():
+    """Single loop for the two periodic jobs. Flushing here rather than on
+    every vote is what keeps a busy day from getting progressively slower."""
+    global _rooms_dirty
+    last_prune = time.time()
+    while True:
+        await asyncio.sleep(FLUSH_INTERVAL_SECONDS)
+        try:
+            if _rooms_dirty:
+                _rooms_dirty = False
+                _write_rooms_now()
+            if time.time() - last_prune > PRUNE_INTERVAL_SECONDS:
+                last_prune = time.time()
+                prune_rooms()
+        except Exception as e:
+            # A failure here must never kill the loop -- if it dies, state
+            # silently stops being written for the rest of the process's life.
+            print(f"[maintenance] {e!r}")
 
 
 rooms: Dict[str, dict] = load_rooms()
@@ -123,8 +254,13 @@ def load_users() -> Dict[str, dict]:
 
 
 def save_users():
+    """Atomic, same reasoning as save_rooms() above -- a truncated users.json
+    would log everyone out and orphan every saved taste profile and gift
+    reminder at once."""
     try:
-        USERS_FILE.write_text(json.dumps(users), encoding="utf-8")
+        tmp = USERS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(users), encoding="utf-8")
+        os.replace(tmp, USERS_FILE)
     except OSError:
         pass
 
@@ -235,8 +371,22 @@ class CreateRoomRequest(BaseModel):
 
 
 def make_room_code() -> str:
+    """A code that isn't already in use.
+
+    The unguarded version could return a code an ACTIVE squad was already
+    using, and `rooms[code] = new_room_state(...)` would silently wipe them
+    mid-session -- their cart, votes and members gone with no error anywhere.
+    At 32^5 that's rare with a handful of squads, but it scales with the
+    square of concurrent rooms, and it's the kind of failure that's
+    impossible to diagnose from a bug report. Bounded retry, then a longer
+    code rather than an infinite loop.
+    """
     safe_chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    return "".join(random.choices(safe_chars, k=5))
+    for _ in range(50):
+        code = "".join(random.choices(safe_chars, k=5))
+        if code not in rooms:
+            return code
+    return "".join(random.choices(safe_chars, k=8))
 
 
 def gift_recipient_display(relation: str, name: str) -> str:
@@ -259,6 +409,10 @@ def new_room_state(
         "occasion": occasion,
         "budget": budget,
         "when": when,
+        # Lets prune_rooms() age out rooms that were created and then never
+        # joined -- the commonest kind of junk once a QR code is public, and
+        # the only timestamp available before any activity has happened.
+        "created_at": time.time(),
         "itinerary": itinerary or [],
         "gift_recipient_relation": gift_recipient_relation,
         "gift_recipient_name": gift_recipient_name,
@@ -268,6 +422,9 @@ def new_room_state(
         "participant_emails": {},
         "reactions": {},
         "cart": [],
+        # Set by the "Hey AI, ..." chat command -- see parse_ai_chat_intent()
+        # in ai_coordinator.py. None means no filter is active.
+        "ai_chat_filter": None,
         # AI advice on contested items, keyed by item id: {item_id: advice}.
         # Replaces the old tie_breaks/tie_break_reasons pair, which STORED A
         # DECISION and mutated the cart. This only ever stores a read the
@@ -433,11 +590,29 @@ def compute_catchup(room: dict, client_id: str) -> dict | None:
     }
 
 
-def is_gift_split_room(room: dict) -> bool:
+def is_gift_recipient_set(room: dict) -> bool:
+    """Whether this room is shopping for someone other than the squad.
+
+    Deliberately satisfied by EITHER field. This used to require a relation,
+    which meant typing just a name ("Rhea") and picking no chip produced a
+    room that looked like a gift room to the person who made it but wasn't
+    one to any of the code: no even-split checkout, no "keep it on the
+    down-low" note, and -- worst, because it fails silently a year later --
+    no reminder, since get_reminders() filtered on relation too. A name is
+    strictly MORE specific than a relation, so requiring the vaguer of the
+    two was exactly backwards.
+    """
     relation = (room.get("gift_recipient_relation") or "").strip()
-    if not relation or relation.lower() == "myself":
+    name = (room.get("gift_recipient_name") or "").strip()
+    if relation.lower() == "myself":
+        # Legacy rooms only -- the "Myself" chip has been removed, since
+        # "shopping for myself" is just the default, not a recipient.
         return False
-    return len(room.get("participants", {})) > 1
+    return bool(relation or name)
+
+
+def is_gift_split_room(room: dict) -> bool:
+    return is_gift_recipient_set(room) and len(room.get("participants", {})) > 1
 
 
 @app.post("/api/rooms")
@@ -503,7 +678,12 @@ def get_room(room_id: str):
     # switched. The websocket connect below is still the real, authoritative
     # cap enforcement -- this is just a friendlier heads-up.
     at_capacity = len(room.get("participants", {})) >= MAX_SQUAD_SIZE
-    return {"catalog": CATALOG, "feed_scores": feed_scores, "max_squad_size": MAX_SQUAD_SIZE, "at_capacity": at_capacity, **room}
+    # Which items belong under "Picked for <occasion>". Computed here, not in
+    # the frontend, so there's exactly one table of occasion->category
+    # relevance in the codebase instead of two that silently drift apart.
+    return {"catalog": CATALOG, "feed_scores": feed_scores,
+            "relevant_ids": relevant_category_ids(CATALOG, room),
+            "max_squad_size": MAX_SQUAD_SIZE, "at_capacity": at_capacity, **room}
 
 
 @app.get("/api/reminders")
@@ -516,7 +696,7 @@ def get_reminders(email: str = ""):
     for squad in finished_squads:
         if squad.get("archived"):
             continue
-        if not squad.get("gift_recipient_relation"):
+        if not is_gift_recipient_set(squad):
             continue
         if squad.get("had_itinerary"):
             continue
@@ -654,6 +834,7 @@ async def broadcast_state(room_id: str, event: dict | None = None):
     # cheap. This is exactly the "ranking stays with cheap, fast models"
     # answer given to the judges, made real: nothing here waits on an LLM.
     feed_scores = score_feed(room, CATALOG, persistent_profiles=persistent_profiles_for_room(room))
+    relevant_ids = relevant_category_ids(CATALOG, room)
 
     # The AI note is PER VIEWER, everything else is shared. Some notes are
     # about a specific person ("2 items still need your call"), and a single
@@ -670,6 +851,7 @@ async def broadcast_state(room_id: str, event: dict | None = None):
             "room": room,
             "ai_note": get_ai_suggestion(room, CATALOG, viewer_client_id=client_id),
             "feed_scores": feed_scores,
+            "relevant_ids": relevant_ids,
         }
         if event:
             payload["event"] = event
@@ -757,336 +939,414 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
 
     try:
         while True:
-            data = await ws.receive_json()
-            action = data.get("action")
-            room = rooms[room_id]
+            # This is the boundary that matters most once a QR code puts the
+            # app in front of strangers on unknown browsers: ONE malformed
+            # frame -- a stray non-JSON message, a payload missing a field,
+            # devtools poking at the socket -- used to raise uncaught (the
+            # only guard was WebSocketDisconnect/RuntimeError below), which
+            # silently killed this person's connection loop and skipped every
+            # cleanup step. They'd stay listed in room["participants"]
+            # forever with no way to leave: manager.disconnect() never ran,
+            # so the majority math for the whole squad was permanently
+            # inflated by a phantom voter, for everyone else, until the
+            # server restarted. A per-message try/except means the WORST
+            # case for a bad frame is "that one action was ignored" --
+            # the connection, and the room, stay healthy.
+            try:
+                data = await ws.receive_json()
+            except WebSocketDisconnect:
+                raise  # a real disconnect -- let the outer handler run cleanup
+            except Exception:
+                continue  # not valid JSON at all -- ignore the frame, keep listening
 
-            event = None
+            try:
+                action = data.get("action")
+                room = rooms[room_id]
 
-            if action == "react":
-                item_id = data["item_id"]
-                reaction = data["reaction"]
-                room["reactions"].setdefault(item_id, {})[client_id] = reaction
-                room["activity_log"].append({
-                    "type": "react", "actor": name, "client_id": client_id,
-                    "item_id": item_id, "reaction": reaction, "ts": time.time(),
-                })
+                event = None
 
-                likes = sum(1 for r in room["reactions"][item_id].values() if r == "like")
-                # participants, not members -- a dropped socket shouldn't
-                # change what the squad already agreed the bar for
-                # consensus was. See vote_status() in ai_coordinator.py for
-                # the fuller reasoning; this majority formula matches its
-                # internal one so "in cart" and "deadlocked" never disagree
-                # with each other on the same votes.
-                participant_count = max(len(room.get("participants", {})), 1)
-                majority = 1 if participant_count == 1 else max(2, (participant_count // 2) + 1)
-                if item_id not in room["cart"] and likes >= majority:
-                    room["cart"].append(item_id)
-                    if room.get("itinerary") and item_id not in room["occasion_tags"]:
-                        cart_item = CATALOG_BY_ID.get(item_id)
-                        if cart_item:
-                            inferred = infer_function_for_item(cart_item, room["itinerary"])
-                            if inferred:
-                                room["occasion_tags"][item_id] = inferred
-                if item_id in room["cart"] and likes < majority:
-                    room["cart"].remove(item_id)
-
-                item = CATALOG_BY_ID.get(item_id)
-                event = {
-                    "name": name,
-                    "verb": "liked" if reaction == "like" else "passed on",
-                    "item": item["name"] if item else item_id,
-                    "item_id": item_id,
-                }
-
-                # Persist this vote into the voter's account, if they're
-                # logged in -- this is the one line that makes taste carry
-                # across sessions rather than resetting every time a squad
-                # closes. Kept as a small, same-shaped nudge to the session-
-                # scoped version in ai_coordinator.score_feed(); score_feed
-                # itself is what keeps this from ever dominating a fresh
-                # squad's own occasion/season baseline.
-                voter_email = room.get("participant_emails", {}).get(client_id)
-                if voter_email and item and voter_email in users:
-                    profile = users[voter_email].setdefault("taste_profile", {})
-                    profile[item["tag"]] = profile.get(item["tag"], 0.0) + (1.0 if reaction == "like" else -0.5)
-                    save_users()
-
-            elif action == "request_advice":
-                # Deliberately has NO effect on the cart. It stores a read and
-                # nothing else -- no add, no remove, no lock. The squad's votes
-                # remain the only thing that can actually move an item, which
-                # is the entire point of replacing the old "break_tie" action
-                # (see ai_coordinator.tie_break_advice()).
-                item_id = data["item_id"]
-                item = CATALOG_BY_ID.get(item_id)
-                if not item:
-                    continue
-                advice = tie_break_advice(item, room, CATALOG)
-                room.setdefault("tie_advice", {})[item_id] = advice
-                event = {
-                    "name": name,
-                    "verb": "asked for a read on",
-                    "item": item["name"],
-                    "item_id": item_id,
-                }
-
-            elif action == "assign":
-                item_id = data["item_id"]
-                buyer_id = data.get("buyer_id") or None
-                if buyer_id and buyer_id not in room["participants"]:
-                    buyer_id = None
-                if buyer_id:
-                    room["assignments"][item_id] = buyer_id
-                else:
-                    room["assignments"].pop(item_id, None)
-                item = CATALOG_BY_ID.get(item_id)
-                buyer_name = room["participants"].get(buyer_id) if buyer_id else None
-                event = {
-                    "name": name,
-                    "verb": f"assigned to {buyer_name}" if buyer_name else "unassigned",
-                    "item": item["name"] if item else item_id,
-                }
-
-            elif action == "tag_occasion":
-                item_id = data["item_id"]
-                tag = data.get("tag") or None
-                if tag and tag not in room.get("itinerary", []):
-                    tag = None
-                if tag:
-                    room["occasion_tags"][item_id] = tag
-                else:
-                    room["occasion_tags"].pop(item_id, None)
-                item = CATALOG_BY_ID.get(item_id)
-                event = {
-                    "name": name,
-                    "verb": f"tagged for {tag}" if tag else "untagged",
-                    "item": item["name"] if item else item_id,
-                }
-
-            elif action == "remove_item":
-                item_id = data["item_id"]
-                item = CATALOG_BY_ID.get(item_id)
-                if item_id in room["cart"]:
-                    room["cart"].remove(item_id)
-                room["assignments"].pop(item_id, None)
-                room["occasion_tags"].pop(item_id, None)
-                room["reactions"].pop(item_id, None)
-                room.get("tie_advice", {}).pop(item_id, None)
-                event = {
-                    "name": name,
-                    "verb": "removed",
-                    "item": item["name"] if item else item_id,
-                }
-
-            elif action == "set_split_mode":
-                mode = data.get("mode")
-                if mode not in ("even", "custom"):
-                    continue
-                room["gift_split_mode"] = mode
-                # No seeding needed -- an empty gift_split_manual means
-                # everyone's on auto, which resolve_gift_split() already
-                # turns into a valid even split. The squad starts from a
-                # correct state and only deviates from it once someone
-                # actually types a number.
-                event = {"name": name, "verb": f"switched to {'custom split' if mode == 'custom' else 'even split'}"}
-
-            elif action == "set_custom_amount":
-                # Deliberately only ever writes the CALLER's own entry -- a
-                # person can adjust their own contribution, never anyone
-                # else's. Everyone NOT in this dict auto-splits whatever's
-                # left, live -- see resolve_gift_split().
-                try:
-                    amount = max(0, round(float(data.get("amount", 0))))
-                except (TypeError, ValueError):
-                    continue
-                room.setdefault("gift_split_manual", {})[client_id] = amount
-                event = {"name": name, "verb": "adjusted their share"}
-
-            elif action == "clear_custom_amount":
-                # Lets someone go back to "auto" for themselves -- their
-                # share reverts to an even split of whatever's left among
-                # the other still-auto members, instead of being stuck at
-                # whatever they last typed.
-                if room.get("gift_split_manual", {}).pop(client_id, None) is not None:
-                    event = {"name": name, "verb": "reset their share to auto"}
-                else:
-                    continue
-
-            elif action == "pay_share":
-                cart_total = sum(CATALOG_BY_ID[i]["price"] for i in room.get("cart", []) if i in CATALOG_BY_ID)
-
-                if is_gift_split_room(room):
-                    participant_ids = list(room.get("participants", {}).keys())
-                    if room.get("gift_split_mode") == "custom":
-                        manual = room.get("gift_split_manual", {})
-                        resolved, balanced = resolve_gift_split(cart_total, participant_ids, manual)
-                        if not balanced:
-                            # Split doesn't add up yet -- reject the payment
-                            # rather than accepting a number nobody agreed to.
-                            # No `continue` here since we still want to notify
-                            # the squad via the toast, just without registering
-                            # a payment.
-                            allocated_total = sum(resolved.values())
-                            event = {
-                                "name": name,
-                                "verb": f"tried to pay, but the split only adds up to ₹{allocated_total} of ₹{cart_total} so far",
-                            }
-                            await broadcast_state(room_id, event=event)
-                            continue
-                        my_total = resolved.get(client_id, 0)
-                    else:
-                        my_total = round(cart_total / max(len(participant_ids), 1))
-                    buyer_ids = set(participant_ids)
-                else:
-                    my_total = sum(
-                        CATALOG_BY_ID[i]["price"]
-                        for i, buyer in room["assignments"].items()
-                        if buyer == client_id and i in CATALOG_BY_ID
-                    )
-                    buyer_ids = set(room["assignments"].values())
-
-                room["payments"][client_id] = True
-                event = {"name": name, "verb": "paid their share", "item": f"₹{my_total}"}
-
-                # An order with any unassigned item is never "done," no matter
-                # who's paid what -- otherwise a squad where only some items
-                # have a buyer yet can look fully paid the moment that subset
-                # settles up, which both marks the order complete too early
-                # and skips the reservation window entirely (this was the bug:
-                # the very first payment silently short-circuited straight to
-                # "complete" instead of ever starting the countdown).
-                fully_assigned = is_gift_split_room(room) or all(
-                    i in room["assignments"] for i in room.get("cart", [])
-                )
-                everyone_paid = fully_assigned and buyer_ids and all(room["payments"].get(b) for b in buyer_ids)
-                if everyone_paid and room.get("session_number") is None:
-                    global completed_sessions_count
-                    completed_sessions_count += 1
-                    room["session_number"] = completed_sessions_count
-                    room["checkout_started_at"] = None
-                    room["checkout_expires_at"] = None
-
-                    bought_items = [
-                        {"id": i, "name": CATALOG_BY_ID[i]["name"], "tag": CATALOG_BY_ID[i]["tag"]}
-                        for i in room["cart"] if i in CATALOG_BY_ID
-                    ]
-                    finished_squads.append({
-                        "occasion": room["occasion"],
-                        "when": room["when"],
-                        "members": list(room["participants"].values()),
-                        # Emails of everyone who was actually in this squad --
-                        # this is what lets a reminder later be shown ONLY to
-                        # people who were genuinely part of it, instead of to
-                        # anyone who happens to open the app. See get_reminders().
-                        "participant_emails": list(room.get("participant_emails", {}).values()),
-                        "room_code": room_id,
-                        "gift_recipient_relation": room.get("gift_recipient_relation", ""),
-                        "gift_recipient_name": room.get("gift_recipient_name", ""),
-                        "gift_owner_email": room.get("gift_owner_email", ""),
-                        "bought_items": bought_items,
-                        "had_itinerary": bool(room.get("itinerary")),
-                        "archived": False,
+                if action == "react":
+                    item_id = data.get("item_id")
+                    reaction = data.get("reaction")
+                    if not item_id or reaction not in ("like", "pass"):
+                        continue
+                    room["reactions"].setdefault(item_id, {})[client_id] = reaction
+                    room["activity_log"].append({
+                        "type": "react", "actor": name, "client_id": client_id,
+                        "item_id": item_id, "reaction": reaction, "ts": time.time(),
                     })
-                    save_finished_squads()
-                elif room.get("checkout_expires_at") is None:
-                    # First payment in on an order that isn't already
-                    # complete -- start (or restart, if a previous window
-                    # already expired and released) the reservation clock.
-                    now = time.time()
-                    room["checkout_started_at"] = now
-                    room["checkout_expires_at"] = now + RESERVATION_WINDOW_SECONDS
-                    asyncio.create_task(expire_checkout_reservation(room_id, room["checkout_expires_at"]))
+                    # Bounded. This list only feeds the catch-up banner and
+                    # last-vote-timestamp checks, both of which look at recent
+                    # activity only -- but it was appended to on EVERY vote
+                    # and never trimmed, so a long session grew it without
+                    # limit, and every entry was re-serialised to disk on
+                    # every subsequent save.
+                    if len(room["activity_log"]) > MAX_ACTIVITY_LOG:
+                        del room["activity_log"][:-MAX_ACTIVITY_LOG]
 
-            elif action == "chat":
-                text = (data.get("text") or "").strip()
-                if text:
-                    room["chat"].append({"name": name, "text": text, "ts": time.time()})
-                # Sending a message implies the person's done typing -- clear
-                # their typing flag and let the others know immediately rather
-                # than waiting for the 4s server-side timeout to expire.
-                if typing_status.get(room_id, {}).pop(client_id, None) is not None:
-                    await broadcast_typing(room_id)
+                    likes = sum(1 for r in room["reactions"][item_id].values() if r == "like")
+                    # participants, not members -- a dropped socket shouldn't
+                    # change what the squad already agreed the bar for
+                    # consensus was. See vote_status() in ai_coordinator.py for
+                    # the fuller reasoning; this majority formula matches its
+                    # internal one so "in cart" and "deadlocked" never disagree
+                    # with each other on the same votes.
+                    participant_count = max(len(room.get("participants", {})), 1)
+                    majority = 1 if participant_count == 1 else max(2, (participant_count // 2) + 1)
+                    if item_id not in room["cart"] and likes >= majority:
+                        room["cart"].append(item_id)
+                        if room.get("itinerary") and item_id not in room["occasion_tags"]:
+                            cart_item = CATALOG_BY_ID.get(item_id)
+                            if cart_item:
+                                inferred = infer_function_for_item(cart_item, room["itinerary"])
+                                if inferred:
+                                    room["occasion_tags"][item_id] = inferred
+                    if item_id in room["cart"] and likes < majority:
+                        room["cart"].remove(item_id)
 
-            elif action == "voice_chat":
-                audio = data.get("audio") or ""
-                mime = data.get("mime") or "audio/webm"
-                # Basic validation.
-                if (
-                    isinstance(audio, str)
-                    and audio.startswith("data:audio/")
-                    and len(audio) <= 2_000_000
-                ):
-                    await manager.broadcast(
-                        room_id,
-                        {
-                            "type": "voice_chat",
-                            "message": {
-                                "name": name,
-                                "audio": audio,
-                                "mime": mime,
-                                "ts": time.time(),
-                            },
-                        },
+                    item = CATALOG_BY_ID.get(item_id)
+                    event = {
+                        "name": name,
+                        "verb": "liked" if reaction == "like" else "passed on",
+                        "item": item["name"] if item else item_id,
+                        "item_id": item_id,
+                    }
+
+                    # Persist this vote into the voter's account, if they're
+                    # logged in -- this is the one line that makes taste carry
+                    # across sessions rather than resetting every time a squad
+                    # closes. Kept as a small, same-shaped nudge to the session-
+                    # scoped version in ai_coordinator.score_feed(); score_feed
+                    # itself is what keeps this from ever dominating a fresh
+                    # squad's own occasion/season baseline.
+                    voter_email = room.get("participant_emails", {}).get(client_id)
+                    if voter_email and item and voter_email in users:
+                        profile = users[voter_email].setdefault("taste_profile", {})
+                        profile[item["tag"]] = profile.get(item["tag"], 0.0) + (1.0 if reaction == "like" else -0.5)
+                        save_users()
+
+                elif action == "request_advice":
+                    # Deliberately has NO effect on the cart. It stores a read and
+                    # nothing else -- no add, no remove, no lock. The squad's votes
+                    # remain the only thing that can actually move an item, which
+                    # is the entire point of replacing the old "break_tie" action
+                    # (see ai_coordinator.tie_break_advice()).
+                    item_id = data.get("item_id")
+                    item = CATALOG_BY_ID.get(item_id)
+                    if not item:
+                        continue
+                    advice = tie_break_advice(item, room, CATALOG)
+                    room.setdefault("tie_advice", {})[item_id] = advice
+                    event = {
+                        "name": name,
+                        "verb": "asked for a read on",
+                        "item": item["name"],
+                        "item_id": item_id,
+                    }
+
+                elif action == "assign":
+                    item_id = data.get("item_id")
+                    buyer_id = data.get("buyer_id") or None
+                    if buyer_id and buyer_id not in room["participants"]:
+                        buyer_id = None
+                    if buyer_id:
+                        room["assignments"][item_id] = buyer_id
+                    else:
+                        room["assignments"].pop(item_id, None)
+                    item = CATALOG_BY_ID.get(item_id)
+                    buyer_name = room["participants"].get(buyer_id) if buyer_id else None
+                    event = {
+                        "name": name,
+                        "verb": f"assigned to {buyer_name}" if buyer_name else "unassigned",
+                        "item": item["name"] if item else item_id,
+                    }
+
+                elif action == "tag_occasion":
+                    item_id = data.get("item_id")
+                    tag = data.get("tag") or None
+                    if tag and tag not in room.get("itinerary", []):
+                        tag = None
+                    if tag:
+                        room["occasion_tags"][item_id] = tag
+                    else:
+                        room["occasion_tags"].pop(item_id, None)
+                    item = CATALOG_BY_ID.get(item_id)
+                    event = {
+                        "name": name,
+                        "verb": f"tagged for {tag}" if tag else "untagged",
+                        "item": item["name"] if item else item_id,
+                    }
+
+                elif action == "remove_item":
+                    item_id = data.get("item_id")
+                    item = CATALOG_BY_ID.get(item_id)
+                    if item_id in room["cart"]:
+                        room["cart"].remove(item_id)
+                    room["assignments"].pop(item_id, None)
+                    room["occasion_tags"].pop(item_id, None)
+                    room["reactions"].pop(item_id, None)
+                    room.get("tie_advice", {}).pop(item_id, None)
+                    event = {
+                        "name": name,
+                        "verb": "removed",
+                        "item": item["name"] if item else item_id,
+                    }
+
+                elif action == "set_split_mode":
+                    mode = data.get("mode")
+                    if mode not in ("even", "custom"):
+                        continue
+                    room["gift_split_mode"] = mode
+                    # No seeding needed -- an empty gift_split_manual means
+                    # everyone's on auto, which resolve_gift_split() already
+                    # turns into a valid even split. The squad starts from a
+                    # correct state and only deviates from it once someone
+                    # actually types a number.
+                    event = {"name": name, "verb": f"switched to {'custom split' if mode == 'custom' else 'even split'}"}
+
+                elif action == "set_custom_amount":
+                    # Deliberately only ever writes the CALLER's own entry -- a
+                    # person can adjust their own contribution, never anyone
+                    # else's. Everyone NOT in this dict auto-splits whatever's
+                    # left, live -- see resolve_gift_split().
+                    try:
+                        amount = max(0, round(float(data.get("amount", 0))))
+                    except (TypeError, ValueError):
+                        continue
+                    room.setdefault("gift_split_manual", {})[client_id] = amount
+                    event = {"name": name, "verb": "adjusted their share"}
+
+                elif action == "clear_custom_amount":
+                    # Lets someone go back to "auto" for themselves -- their
+                    # share reverts to an even split of whatever's left among
+                    # the other still-auto members, instead of being stuck at
+                    # whatever they last typed.
+                    if room.get("gift_split_manual", {}).pop(client_id, None) is not None:
+                        event = {"name": name, "verb": "reset their share to auto"}
+                    else:
+                        continue
+
+                elif action == "pay_share":
+                    cart_total = sum(CATALOG_BY_ID[i]["price"] for i in room.get("cart", []) if i in CATALOG_BY_ID)
+
+                    if is_gift_split_room(room):
+                        participant_ids = list(room.get("participants", {}).keys())
+                        if room.get("gift_split_mode") == "custom":
+                            manual = room.get("gift_split_manual", {})
+                            resolved, balanced = resolve_gift_split(cart_total, participant_ids, manual)
+                            if not balanced:
+                                # Split doesn't add up yet -- reject the payment
+                                # rather than accepting a number nobody agreed to.
+                                # No `continue` here since we still want to notify
+                                # the squad via the toast, just without registering
+                                # a payment.
+                                allocated_total = sum(resolved.values())
+                                event = {
+                                    "name": name,
+                                    "verb": f"tried to pay, but the split only adds up to ₹{allocated_total} of ₹{cart_total} so far",
+                                }
+                                await broadcast_state(room_id, event=event)
+                                continue
+                            my_total = resolved.get(client_id, 0)
+                        else:
+                            my_total = round(cart_total / max(len(participant_ids), 1))
+                        buyer_ids = set(participant_ids)
+                    else:
+                        my_total = sum(
+                            CATALOG_BY_ID[i]["price"]
+                            for i, buyer in room["assignments"].items()
+                            if buyer == client_id and i in CATALOG_BY_ID
+                        )
+                        buyer_ids = set(room["assignments"].values())
+
+                    room["payments"][client_id] = True
+                    event = {"name": name, "verb": "paid their share", "item": f"₹{my_total}"}
+
+                    # An order with any unassigned item is never "done," no matter
+                    # who's paid what -- otherwise a squad where only some items
+                    # have a buyer yet can look fully paid the moment that subset
+                    # settles up, which both marks the order complete too early
+                    # and skips the reservation window entirely (this was the bug:
+                    # the very first payment silently short-circuited straight to
+                    # "complete" instead of ever starting the countdown).
+                    fully_assigned = is_gift_split_room(room) or all(
+                        i in room["assignments"] for i in room.get("cart", [])
                     )
-                # Voice messages are intentionally transient.
-                # Do not save them into rooms_state.json.
+                    everyone_paid = fully_assigned and buyer_ids and all(room["payments"].get(b) for b in buyer_ids)
+                    if everyone_paid and room.get("session_number") is None:
+                        global completed_sessions_count
+                        completed_sessions_count += 1
+                        room["session_number"] = completed_sessions_count
+                        room["checkout_started_at"] = None
+                        room["checkout_expires_at"] = None
+
+                        bought_items = [
+                            {"id": i, "name": CATALOG_BY_ID[i]["name"], "tag": CATALOG_BY_ID[i]["tag"]}
+                            for i in room["cart"] if i in CATALOG_BY_ID
+                        ]
+                        finished_squads.append({
+                            "occasion": room["occasion"],
+                            "when": room["when"],
+                            "members": list(room["participants"].values()),
+                            # Emails of everyone who was actually in this squad --
+                            # this is what lets a reminder later be shown ONLY to
+                            # people who were genuinely part of it, instead of to
+                            # anyone who happens to open the app. See get_reminders().
+                            "participant_emails": list(room.get("participant_emails", {}).values()),
+                            "room_code": room_id,
+                            "gift_recipient_relation": room.get("gift_recipient_relation", ""),
+                            "gift_recipient_name": room.get("gift_recipient_name", ""),
+                            "gift_owner_email": room.get("gift_owner_email", ""),
+                            "bought_items": bought_items,
+                            "had_itinerary": bool(room.get("itinerary")),
+                            "archived": False,
+                        })
+                        save_finished_squads()
+                    elif room.get("checkout_expires_at") is None:
+                        # First payment in on an order that isn't already
+                        # complete -- start (or restart, if a previous window
+                        # already expired and released) the reservation clock.
+                        now = time.time()
+                        room["checkout_started_at"] = now
+                        room["checkout_expires_at"] = now + RESERVATION_WINDOW_SECONDS
+                        asyncio.create_task(expire_checkout_reservation(room_id, room["checkout_expires_at"]))
+
+                elif action == "clear_ai_filter":
+                    if room.get("ai_chat_filter"):
+                        room["ai_chat_filter"] = None
+                        room["chat"].append({
+                            "name": "AI Stylist", "text": "Filter cleared -- showing everything again.",
+                            "ts": time.time(), "is_ai": True,
+                        })
+                        if len(room["chat"]) > MAX_CHAT_MESSAGES:
+                            del room["chat"][:-MAX_CHAT_MESSAGES]
+
+                elif action == "chat":
+                    text = (data.get("text") or "").strip()
+                    if text:
+                        room["chat"].append({"name": name, "text": text, "ts": time.time()})
+                        # Same reasoning as activity_log above -- keep the
+                        # recent conversation, not an unbounded transcript.
+                        if len(room["chat"]) > MAX_CHAT_MESSAGES:
+                            del room["chat"][:-MAX_CHAT_MESSAGES]
+
+                        # "Hey AI, ..." -- see parse_ai_chat_intent()'s docstring
+                        # for why this is a keyword parser, not an LLM call.
+                        # Always posts a reply if the trigger fired at all, even
+                        # when nothing was recognised -- a silent non-response
+                        # to something clearly addressed at "AI" would read as
+                        # broken, not as "didn't match anything."
+                        intent = parse_ai_chat_intent(text)
+                        if intent is not None:
+                            if intent == "clear":
+                                room["ai_chat_filter"] = None
+                                reply = "Filter cleared -- showing everything again."
+                            elif intent == {}:
+                                reply = "Didn't catch a specific ask there -- try \"something cheaper\", \"more festive\", or a color like \"less black\"."
+                            else:
+                                intent["requested_by"] = name
+                                room["ai_chat_filter"] = intent
+                                reply = f"Got it -- {intent['summary']}."
+                            room["chat"].append({
+                                "name": "AI Stylist", "text": reply, "ts": time.time(),
+                                "is_ai": True,
+                            })
+                            if len(room["chat"]) > MAX_CHAT_MESSAGES:
+                                del room["chat"][:-MAX_CHAT_MESSAGES]
+                    # Sending a message implies the person's done typing -- clear
+                    # their typing flag and let the others know immediately rather
+                    # than waiting for the 4s server-side timeout to expire.
+                    if typing_status.get(room_id, {}).pop(client_id, None) is not None:
+                        await broadcast_typing(room_id)
+
+                elif action == "voice_chat":
+                    audio = data.get("audio") or ""
+                    mime = data.get("mime") or "audio/webm"
+                    # Basic validation.
+                    if (
+                        isinstance(audio, str)
+                        and audio.startswith("data:audio/")
+                        and len(audio) <= 2_000_000
+                    ):
+                        await manager.broadcast(
+                            room_id,
+                            {
+                                "type": "voice_chat",
+                                "message": {
+                                    "name": name,
+                                    "audio": audio,
+                                    "mime": mime,
+                                    "ts": time.time(),
+                                },
+                            },
+                        )
+                    # Voice messages are intentionally transient.
+                    # Do not save them into rooms_state.json.
+                    continue
+
+                elif action == "surprise_roulette":
+                    picks = pick_surprise_items(room, CATALOG)
+                    event = {
+                        "name": name,
+                        "verb": "spun the Surprise Us roulette" if picks else "spun the roulette -- nothing fit the remaining budget",
+                        "roulette_item_ids": [p["id"] for p in picks],
+                    }
+
+                elif action == "finalize":
+                    room["finalized"] = not room["finalized"]
+
+                elif action == "typing_start":
+                    # Skips broadcast_state entirely (via continue below) -- a
+                    # full state rebroadcast + disk save on every keystroke would
+                    # be wasteful and would make typing feel laggy under load.
+                    typing_status.setdefault(room_id, {})[client_id] = time.time()
+                    await broadcast_typing(room_id)
+                    continue
+
+                elif action == "typing_stop":
+                    typing_status.get(room_id, {}).pop(client_id, None)
+                    await broadcast_typing(room_id)
+                    continue
+
+                elif action == "voice_recording_start":
+                    voice_recording_status.setdefault(room_id, {})[client_id] = time.time()
+                    await broadcast_typing(room_id)
+                    continue
+
+                elif action == "voice_recording_stop":
+                    voice_recording_status.get(room_id, {}).pop(client_id, None)
+                    await broadcast_typing(room_id)
+                    continue
+
+                elif action == "considering_item_start":
+                    item_name = (data.get("item_name") or "an item").strip()
+                    item_id = data.get("item_id")
+                    considering_status.setdefault(room_id, {})[client_id] = (time.time(), item_name, item_id)
+                    await broadcast_typing(room_id)
+                    continue
+
+                elif action == "considering_item_stop":
+                    considering_status.get(room_id, {}).pop(client_id, None)
+                    await broadcast_typing(room_id)
+                    continue
+
+                elif action == "dismiss_recommendation":
+                    item_id = data.get("item_id")
+                    if item_id and item_id not in room.setdefault("dismissed_recommendations", []):
+                        room["dismissed_recommendations"].append(item_id)
+                    event = {"name": name, "verb": "dismissed a suggested add-on"}
+
+                await broadcast_state(room_id, event=event)
+
+            except Exception as e:
+                # Anything else -- a KeyError from an unexpected payload
+                # shape, a bad value in an otherwise-valid JSON message,
+                # whatever a stranger's browser or a stray extension sends.
+                # Logged so a real bug is still visible in the server logs,
+                # but it costs this one connection nothing: the loop just
+                # goes back to waiting for the next message.
+                print(f"[ws] ignored bad message from {client_id} in {room_id}: {e!r}")
                 continue
-
-            elif action == "surprise_roulette":
-                picks = pick_surprise_items(room, CATALOG)
-                event = {
-                    "name": name,
-                    "verb": "spun the Surprise Us roulette" if picks else "spun the roulette -- nothing fit the remaining budget",
-                    "roulette_item_ids": [p["id"] for p in picks],
-                }
-
-            elif action == "finalize":
-                room["finalized"] = not room["finalized"]
-
-            elif action == "typing_start":
-                # Skips broadcast_state entirely (via continue below) -- a
-                # full state rebroadcast + disk save on every keystroke would
-                # be wasteful and would make typing feel laggy under load.
-                typing_status.setdefault(room_id, {})[client_id] = time.time()
-                await broadcast_typing(room_id)
-                continue
-
-            elif action == "typing_stop":
-                typing_status.get(room_id, {}).pop(client_id, None)
-                await broadcast_typing(room_id)
-                continue
-
-            elif action == "voice_recording_start":
-                voice_recording_status.setdefault(room_id, {})[client_id] = time.time()
-                await broadcast_typing(room_id)
-                continue
-
-            elif action == "voice_recording_stop":
-                voice_recording_status.get(room_id, {}).pop(client_id, None)
-                await broadcast_typing(room_id)
-                continue
-
-            elif action == "considering_item_start":
-                item_name = (data.get("item_name") or "an item").strip()
-                item_id = data.get("item_id")
-                considering_status.setdefault(room_id, {})[client_id] = (time.time(), item_name, item_id)
-                await broadcast_typing(room_id)
-                continue
-
-            elif action == "considering_item_stop":
-                considering_status.get(room_id, {}).pop(client_id, None)
-                await broadcast_typing(room_id)
-                continue
-
-            elif action == "dismiss_recommendation":
-                item_id = data.get("item_id")
-                if item_id and item_id not in room.setdefault("dismissed_recommendations", []):
-                    room["dismissed_recommendations"].append(item_id)
-                event = {"name": name, "verb": "dismissed a suggested add-on"}
-
-            await broadcast_state(room_id, event=event)
 
     except (WebSocketDisconnect, RuntimeError):
         manager.disconnect(room_id, client_id)

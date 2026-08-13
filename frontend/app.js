@@ -1,11 +1,33 @@
+// Your identity within a squad, stable across reloads.
+//
+// This used to generate a fresh UUID on EVERY page load despite its name --
+// nothing ever read it back. On a deployed app that's serious: participants
+// are keyed by client_id and are deliberately never pruned (so a wifi blip
+// doesn't change the consensus bar), so one refresh registered you as an
+// additional person who could never vote. In a 3-person squad, two refreshes
+// pushes the majority bar from 2 to 3 while only 3 people can actually
+// vote -- consensus becomes unreachable and nothing can ever reach the cart.
+//
+// sessionStorage, not localStorage, on purpose: it survives a refresh (the
+// bug) but is per-tab, so opening a second tab still gives you a second
+// identity -- which is exactly how the app gets demoed by one person.
 function getOrCreateClientId(){
   try {
-    if (window.crypto && crypto.randomUUID) {
-      return crypto.randomUUID();
-    }
+    const existing = sessionStorage.getItem('squadClientId');
+    if(existing) return existing;
   } catch(e) {}
 
-  return Math.random().toString(36).slice(2,10) + Date.now().toString(36);
+  let id;
+  try {
+    id = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2,10) + Date.now().toString(36);
+  } catch(e) {
+    id = Math.random().toString(36).slice(2,10) + Date.now().toString(36);
+  }
+
+  try { sessionStorage.setItem('squadClientId', id); } catch(e) {}
+  return id;
 }
 
 const state = {
@@ -15,6 +37,7 @@ const state = {
   knownCartIds: new Set(), hasInitializedCart: false,
   typingDebounceTimer: null, isCurrentlyTypingSignal: false,
   feedScores: {},
+  relevantIds: null,
   autoShownTieIds: new Set(),
   tieModalItemId: null,
   tieModalView: 'choose',
@@ -22,6 +45,8 @@ const state = {
   returnToCheckoutAfterJump: false,
   roulettePulsedCartIds: new Set(),
   currentConsideringItemId: null,
+  reconnectAttempts: 0,
+  reconnectTimer: null,
 };
 const $ = s => document.querySelector(s);
 const $all = s => document.querySelectorAll(s);
@@ -362,6 +387,9 @@ function resetPerRoomState(){
   state.lastChatCount = 0;
   state.voiceMessages = [];
   state.feedScores = {};
+  state.relevantIds = null;
+  const aiChip = $('#ai-filter-chip');
+  if(aiChip) aiChip.classList.remove('show');
   state.autoShownTieIds = new Set();
   state.tieModalItemId = null;
   state.tieModalView = 'choose';
@@ -407,6 +435,9 @@ function resetPerRoomState(){
 // even after close() has been called, which is exactly what was causing
 // squad #2 to visually "snap back" to squad #1's content mid-demo.
 function closeSocketIfOpen(){
+  clearTimeout(state.reconnectTimer);
+  state.reconnectAttempts = 0;
+  showReconnectBanner(false);
   if(!state.ws) return;
   state.ws.onmessage = null;
   state.ws.onopen = null;
@@ -427,12 +458,34 @@ function enterRoom(roomId, name){
 
   state.roomId = roomId;
   state.name = name;
+  state.reconnectAttempts = 0;
   showScreen('screen-room');
 
+  connectSocket(roomId, name);
+
+  fetch('/api/rooms/' + roomId).then(r=>r.json()).then(d => {
+    state.catalog = d.catalog;
+    state.feedScores = d.feed_scores || {};
+    if(d.relevant_ids) state.relevantIds = new Set(d.relevant_ids);
+    render();
+  });
+}
+
+// Opens the websocket for a room. Used both by enterRoom() (fresh entry --
+// resets everything, switches screen) and by attemptReconnect() below (a
+// dropped connection coming back -- must NOT reset local state or jump
+// screens, since the whole point is that the person shouldn't notice they
+// were disconnected beyond a brief banner).
+function connectSocket(roomId, name){
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const email = getStoredUserEmail();
   const ws = new WebSocket(`${proto}://${location.host}/ws/${roomId}?name=${encodeURIComponent(name)}&client_id=${state.clientId}&email=${encodeURIComponent(email)}`);
   ws.onopen = () => {
+    // A real reconnect, not the first connect -- confirm it landed and
+    // reset the backoff so the NEXT drop starts retrying quickly again
+    // rather than inheriting a long delay from this one.
+    if(state.reconnectAttempts > 0) showReconnectBanner(false);
+    state.reconnectAttempts = 0;
     if(state.preLikeItemId){
       ws.send(JSON.stringify({ action: 'react', item_id: state.preLikeItemId, reaction: 'like' }));
       state.preLikeItemId = null;
@@ -444,6 +497,7 @@ function enterRoom(roomId, name){
       state.room = msg.room;
       state.aiNote = msg.ai_note;
       state.feedScores = msg.feed_scores || {};
+      if(msg.relevant_ids) state.relevantIds = new Set(msg.relevant_ids);
       render();
       if(msg.event){
         if(msg.event.roulette_item_ids !== undefined){
@@ -470,28 +524,72 @@ function enterRoom(roomId, name){
       }
     }
   };
-  // Code 4008 is the backend's squad-full rejection (see main.py's
-  // websocket_endpoint) -- this only ever fires for a genuinely NEW
-  // participant hitting a squad already at MAX_SQUAD_SIZE at the exact
-  // moment they try to connect (the join-form pre-check above catches the
-  // common case; this is the race-condition backstop). Bounce back to
-  // landing with the same message rather than leaving them stuck on a
-  // room screen with a dead socket and no explanation.
+  // Code 4008 is the backend's squad-full rejection -- only ever fires for a
+  // genuinely NEW participant, never a returning one, so it's never worth
+  // retrying: bounce back to landing with an explanation, same as before.
+  //
+  // Every OTHER close -- a wifi blip, a phone backgrounding the tab and the
+  // OS suspending the connection (both routine on a room full of people on
+  // their own phones), a brief server hiccup -- used to just leave the
+  // screen sitting there silently with a dead socket and stale data. On a
+  // live judged walkthrough that reads as "the app broke," with no way to
+  // tell whether it's actually broken or just needs a second to catch up.
+  // Reconnect automatically instead, and say so on screen while it's
+  // happening. closeSocketIfOpen() always nulls onclose BEFORE calling
+  // close(), so if this handler fires at all, the drop was real -- never
+  // triggered by the person's own "leave room" or "switch account" action.
   ws.onclose = (evt) => {
     if(evt.code === 4008 && state.roomId === roomId){
       state.ws = null;
       leaveRoom();
       showScreen('screen-landing');
       $('#join-error').textContent = `This squad's already got ${MAX_SQUAD_SIZE} people -- ask them to make room, or start your own squad instead.`;
+      return;
     }
+    if(state.roomId === roomId) attemptReconnect(roomId, name);
   };
   state.ws = ws;
+}
 
-  fetch('/api/rooms/' + roomId).then(r=>r.json()).then(d => {
-    state.catalog = d.catalog;
-    state.feedScores = d.feed_scores || {};
-    render();
-  });
+const MAX_RECONNECT_ATTEMPTS = 8;
+
+function attemptReconnect(roomId, name){
+  state.reconnectAttempts++;
+  showReconnectBanner(true, state.reconnectAttempts > 3);
+  if(state.reconnectAttempts > MAX_RECONNECT_ATTEMPTS){
+    // Genuinely gone, not just a blip -- say so plainly rather than
+    // retrying forever with no way out.
+    showReconnectBanner(true, true, true);
+    return;
+  }
+  // Backoff: 1s, 2s, 4s, 8s, capped at 8s. Fast enough that a two-second
+  // wifi hiccup is invisible; capped so it isn't hammering the server if
+  // the connection is down for longer.
+  const delay = Math.min(1000 * (2 ** (state.reconnectAttempts - 1)), 8000);
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = setTimeout(() => {
+    if(state.roomId !== roomId) return; // left the room while waiting
+    connectSocket(roomId, name);
+  }, delay);
+}
+
+// A small, unmissable but non-blocking banner -- deliberately NOT a modal,
+// since a dropped connection reconnecting in the background shouldn't stop
+// someone from reading the card in front of them.
+function showReconnectBanner(show, slow = false, failed = false){
+  const el = $('#reconnect-banner');
+  if(!el) return;
+  if(!show){ el.classList.remove('show'); return; }
+  if(failed){
+    el.textContent = "Can't reconnect -- check your connection, then rejoin with the squad code.";
+    el.classList.add('show', 'failed');
+  } else {
+    el.textContent = slow
+      ? 'Still trying to reconnect...'
+      : 'Connection dropped -- reconnecting...';
+    el.classList.remove('failed');
+    el.classList.add('show');
+  }
 }
 
 // ---- Product media (image or emoji fallback) ------------------------------
@@ -803,6 +901,44 @@ $('#catchup-banner').addEventListener('click', (e) => {
   if(e.target.closest('#catchup-dismiss')) $('#catchup-banner').classList.remove('show');
 });
 
+// A short-lived nudge for anything in the shell that ISN'T built for this
+// demo (category tiles, the hero banner, fwd/now/LUXE/Bag). Distinct from
+// showEventToast()/toastQueue: those are squad-vote events with their own
+// ordering and duration logic, and this has nothing to do with a room. A tap
+// on a decorative element should feel acknowledged, not silent -- silence is
+// what makes a UI read as broken during a walkthrough, whereas the SAME
+// unbuilt element with a clear "this demo's about Shop Together" response
+// reads as an intentional scope choice.
+let homeNudgeTimer = null;
+function showHomeNudge(text){
+  const el = $('#event-toast');
+  delete el.dataset.jumpItem;
+  el.classList.remove('clickable');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(homeNudgeTimer);
+  homeNudgeTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+// Delegated once on #screen-home rather than per-element, so it also covers
+// anything added to the home screen later without needing a matching
+// listener. home-squad-teaser and .home-demo-btn are real, wired features --
+// explicitly excluded so this never intercepts a click meant for them.
+$('#screen-home').addEventListener('click', (e) => {
+  if(e.target.closest('.home-squad-teaser') || e.target.closest('.home-demo-btn')) return;
+  const target = e.target.closest('.shortcut, .trending-chip, .hero-banner, .offer-strip, .cat-grid-item');
+  if(!target) return;
+  showHomeNudge('This demo is focused on Shop Together -- tap below to try it 👇');
+});
+
+// Same idea for the three nav items that aren't wired (fwd/now/LUXE). Bag
+// isn't built either but reads least like a dead end if it nudges toward the
+// one place items actually end up: the squad checkout.
+$('#nav-fwd').addEventListener('click', () => showHomeNudge('Not part of this demo -- Shop Together is the feature to try 👇'));
+$('#nav-now').addEventListener('click', () => showHomeNudge('Not part of this demo -- Shop Together is the feature to try 👇'));
+$('#nav-luxe').addEventListener('click', () => showHomeNudge('Not part of this demo -- Shop Together is the feature to try 👇'));
+$('#nav-bag').addEventListener('click', () => showHomeNudge('Nothing here yet -- items land in a squad\'s cart during Shop Together.'));
+
 function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -1086,26 +1222,28 @@ $('#product-grid').addEventListener('click', (e) => {
   if(discussBtn){ openChatForItem(discussBtn.dataset.discussItem); return; }
 });
 
-const OCCASION_TAGS = {
-  'Birthday': ['ethnic', 'party', 'floral', 'beauty'],
-  'Anniversary': ['ethnic', 'party', 'beauty'],
-  'Wedding / Festive Function': ['ethnic', 'floral'],
-  'Farewell / Graduation': ['western', 'office'],
-  'Beach / Vacation Trip': ['beach', 'western'],
-  'Office / Work': ['office', 'solid'],
-  'Casual Everyday': ['western', 'solid'],
-  'Monsoon Errands': ['monsoon', 'solid'],
-};
+// (OCCASION_TAGS used to be duplicated here purely to decide the shelf's
+// section split. That's now answered by the backend via relevant_ids -- see
+// splitByOccasion() -- so this copy is gone. One table, one source of truth.)
 
 function byFeedScore(a, b){
   return (state.feedScores[b.id] ?? 0) - (state.feedScores[a.id] ?? 0);
 }
 
-function splitByOccasion(items, occasion){
-  const tags = OCCASION_TAGS[occasion];
-  if(!tags) return { matching: [], rest: [...items].sort(byFeedScore), hasSplit: false };
-  const matching = items.filter(i => tags.includes(i.tag)).sort(byFeedScore);
-  const rest = items.filter(i => !tags.includes(i.tag)).sort(byFeedScore);
+// Which items sit under "Picked for <occasion>" vs "More to explore".
+// The decision comes from the backend (relevant_ids), which owns the single
+// occasion->category relevance table. This used to be a second copy of that
+// logic living here in the frontend, which had already drifted out of sync
+// with the backend's -- items scoring well in the ranker were being filed
+// under "More to explore".
+function splitByOccasion(items){
+  const sorted = [...items].sort(byFeedScore);
+  const relevant = state.relevantIds;
+  // No relevance data yet (first paint, before the socket's first message):
+  // show one ranked list rather than inventing a split.
+  if(!relevant) return { matching: sorted, rest: [], hasSplit: false };
+  const matching = sorted.filter(i => relevant.has(i.id));
+  const rest = sorted.filter(i => !relevant.has(i.id));
   return { matching, rest, hasSplit: matching.length > 0 && rest.length > 0 };
 }
 
@@ -1213,8 +1351,13 @@ function renderGrid(filtered, room){
       return html;
     };
   } else {
-    const { matching, rest, hasSplit } = splitByOccasion(filtered, room.occasion);
-    ordered = hasSplit ? [...matching, ...rest] : filtered;
+    const { matching, rest, hasSplit } = splitByOccasion(filtered);
+    // BUG FIX: this used to fall back to `filtered` -- i.e. RAW CATALOG ORDER
+    // -- whenever hasSplit was false. splitByOccasion sorts by score and then
+    // that sort was silently discarded, so on the commonest path of all
+    // ("Just Browsing", the default in the dropdown) the recommender's output
+    // never reached the screen at all. Always use the sorted lists.
+    ordered = [...matching, ...rest];
     filteredKey = ordered.map(i => i.id).join(',') + (hasSplit ? '|split' : '') + '|top:' + topPick;
     buildHtml = () => {
       if(!hasSplit) return ordered.map(item => cardHtml(item, room, item.id === topPick)).join('');
@@ -1315,10 +1458,87 @@ function giftRecipientDisplay(room){
   const relation = (room.gift_recipient_relation || '').trim();
   return name || relation;
 }
+// Mirrors backend's is_gift_recipient_set() -- kept in sync manually, same
+// reasoning as MAX_SQUAD_SIZE. Satisfied by EITHER field: typing just a name
+// ("Rhea") with no chip picked used to produce a room that looked like a gift
+// room to the person who made it but wasn't one to any of the code -- no even
+// split, no secrecy note, and no reminder a year later. A name is strictly
+// more specific than a relation, so requiring the vaguer one was backwards.
 function isGiftRoom(room){
   const relation = (room.gift_recipient_relation || '').trim().toLowerCase();
-  return relation && relation !== 'myself';
+  const name = (room.gift_recipient_name || '').trim();
+  // 'myself' only appears in legacy rooms -- the chip has been removed, since
+  // shopping for yourself is the default, not a recipient.
+  if(relation === 'myself') return false;
+  return !!(relation || name);
 }
+
+// Applies room.ai_chat_filter (set by "Hey AI, ..." in chat -- see
+// parse_ai_chat_intent() in ai_coordinator.py) to what's about to render.
+//
+// Exclusion (color) genuinely removes matching items from the shelf -- safe
+// to do outright because it only ever affects the ~20 items with a
+// confidently-known color (see add_color_tags.py); it can never empty the
+// whole shelf. Everything else (include colors/tags/categories, rating,
+// price direction) is applied as a SCORE BOOST rather than a hard filter, so
+// asking for "more festive" surfaces festive items first without hiding
+// everything else -- the squad can still see and vote on the rest.
+//
+// The boost is folded directly into state.feedScores for the duration of
+// this one render() call, then restored. That's deliberate: every other
+// function that orders the shelf (byFeedScore, topPickId, the itinerary
+// section split) already reads from state.feedScores, so boosting it here
+// means the AI's request flows through all of that existing machinery for
+// free, instead of needing every sort site updated to know about a second,
+// separate scoring system.
+function applyAiChatFilter(items, filter){
+  if(!filter) return { items, scoreOverrides: null };
+
+  const excluded = new Set(filter.exclude_colors || []);
+  const keep = excluded.size ? items.filter(i => !excluded.has(i.color)) : items;
+
+  const includeColors = new Set(filter.include_colors || []);
+  const includeTags = new Set(filter.include_tags || []);
+  const includeCats = new Set(filter.include_categories || []);
+  const minRating = filter.min_rating || null;
+  const priceDir = filter.price_direction || null;
+
+  const hasBoostSignal = includeColors.size || includeTags.size || includeCats.size || minRating || priceDir;
+  if(!hasBoostSignal) return { items: keep, scoreOverrides: null };
+
+  const overrides = {};
+  keep.forEach(item => {
+    let boost = 0;
+    if(includeColors.has(item.color)) boost += 5;
+    if(includeTags.has(item.tag)) boost += 5;
+    if(includeCats.has(item.category)) boost += 5;
+    if(minRating && item.rating >= minRating) boost += 3;
+    // Small enough to only break ties within a group that's already
+    // matched above -- a price ask alone still gently reorders everything,
+    // it just never lets a cheap item leapfrog a genuinely better-matched
+    // expensive one.
+    if(priceDir === 'cheaper') boost += (5000 - item.price) / 2000;
+    if(priceDir === 'pricier') boost += item.price / 2000;
+    if(boost > 0) overrides[item.id] = (state.feedScores[item.id] ?? 0) + boost;
+  });
+  return { items: keep, scoreOverrides: overrides };
+}
+
+function renderAiFilterChip(room){
+  const chip = $('#ai-filter-chip');
+  if(!chip) return;
+  const filter = room.ai_chat_filter;
+  if(!filter){
+    chip.classList.remove('show');
+    return;
+  }
+  chip.innerHTML = `<span>✦ AI filter: ${escapeHtml(filter.summary)}</span><button type="button" id="ai-filter-clear" aria-label="Clear">✕</button>`;
+  chip.classList.add('show');
+}
+
+$('#ai-filter-chip')?.addEventListener('click', (e) => {
+  if(e.target.closest('#ai-filter-clear')) send('clear_ai_filter');
+});
 
 function render(){
   if(!state.room || !state.catalog.length) return;
@@ -1360,7 +1580,18 @@ function render(){
   if(aiBar) aiBar.style.display = note ? 'flex' : 'none';
 
   const filtered = state.catalog.filter(item => matchesSearch(item, state.searchTerm));
-  renderGrid(filtered, room);
+  const { items: aiFiltered, scoreOverrides } = applyAiChatFilter(filtered, room.ai_chat_filter);
+  renderAiFilterChip(room);
+
+  // Swap in boosted scores only for this synchronous render pass -- render()
+  // never awaits anything mid-function, so there's no risk of another caller
+  // seeing the temporarily-overridden scores. Restored immediately after,
+  // so the NEXT state broadcast (which recomputes real feedScores from
+  // scratch server-side) is never fighting a stale local override.
+  const realFeedScores = state.feedScores;
+  if(scoreOverrides) state.feedScores = { ...realFeedScores, ...scoreOverrides };
+  renderGrid(aiFiltered, room);
+  state.feedScores = realFeedScores;
 
   const cartItems = room.cart.map(id => state.catalog.find(c => c.id === id)).filter(Boolean);
   const total = cartItems.reduce((s,i)=> s + i.price, 0);
@@ -1569,8 +1800,14 @@ function renderChat(room) {
     const isMe = m.name === state.name;
     if(m.kind === 'text'){
       const div = document.createElement('div');
-      div.className = `chat-msg ${isMe ? 'me' : 'them'}`;
-      div.innerHTML = `<div class="who">${escapeHtml(m.name)}</div><div>${escapeHtml(m.text)}</div>`;
+      // AI replies get their own look -- neither "me" nor "them", since it's
+      // not another squad member. Centered so it visually breaks the left/
+      // right conversation rhythm, the same way a system message would in
+      // any chat app.
+      div.className = m.is_ai ? 'chat-msg ai' : `chat-msg ${isMe ? 'me' : 'them'}`;
+      div.innerHTML = m.is_ai
+        ? `<div class="who">✦ AI Stylist</div><div>${escapeHtml(m.text)}</div>`
+        : `<div class="who">${escapeHtml(m.name)}</div><div>${escapeHtml(m.text)}</div>`;
       list.appendChild(div);
     } else {
       const wrapper = document.createElement('div');

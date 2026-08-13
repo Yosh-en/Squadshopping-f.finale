@@ -6,7 +6,7 @@
 <title>Shop Together -- Myntra Hackathon MVP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=90">
+<link rel="stylesheet" href="/static/style.css?v=95">
 </head>
 <body>
 
@@ -219,7 +219,6 @@
           <div class="optional-section" id="recipient-section" style="display:none;">
             <label>Who's this for?</label>
             <div class="recipient-chip-row">
-              <button type="button" class="recipient-chip" data-recipient="Myself">Myself</button>
               <button type="button" class="recipient-chip" data-recipient="Mom">Mom</button>
               <button type="button" class="recipient-chip" data-recipient="Dad">Dad</button>
               <button type="button" class="recipient-chip" data-recipient="Sister">Sister</button>
@@ -293,6 +292,12 @@
     <div id="screen-room" class="screen">
       <div id="catchup-banner" class="catchup-banner"></div>
 
+      <!-- Shown only on an actual dropped connection (wifi blip, phone
+           backgrounding the tab) -- see attemptReconnect() in app.js. A
+           strip, not a modal: reconnecting in the background shouldn't
+           stop someone from reading whatever's already on screen. -->
+      <div id="reconnect-banner" class="reconnect-banner"></div>
+
       <div id="roulette-modal" class="modal-overlay roulette-overlay">
         <div class="modal-card roulette-modal-card">
           <button id="roulette-close-btn" class="roulette-close-btn" type="button" aria-label="Close">✕</button>
@@ -348,6 +353,11 @@
         </div>
         <button id="roulette-btn" class="roulette-btn" type="button" title="Surprise us with 5 picks">🎰 Surprise Us</button>
       </div>
+
+      <!-- Set by anyone typing "Hey AI, ..." in chat -- see
+           parse_ai_chat_intent() in ai_coordinator.py. Visible to the whole
+           squad, not just whoever asked, and dismissible by anyone. -->
+      <div id="ai-filter-chip" class="ai-filter-chip"></div>
 
       <div id="product-grid"></div>
 
@@ -428,13 +438,13 @@
 
   <div class="app-bottomnav">
     <div class="nav-item active" id="nav-home" onclick="showScreen('screen-home')"><span class="nav-ic">🏠</span><span class="nav-label">Home</span></div>
-    <div class="nav-item"><span class="nav-ic">⚡</span><span class="nav-label">fwd</span></div>
-    <div class="nav-item"><span class="nav-ic">🕐</span><span class="nav-label">now</span></div>
-    <div class="nav-item"><span class="nav-ic">💎</span><span class="nav-label">LUXE</span></div>
-    <div class="nav-item"><span class="nav-ic">👜</span><span class="nav-label">Bag</span></div>
+    <div class="nav-item" id="nav-fwd"><span class="nav-ic">⚡</span><span class="nav-label">fwd</span></div>
+    <div class="nav-item" id="nav-now"><span class="nav-ic">🕐</span><span class="nav-label">now</span></div>
+    <div class="nav-item" id="nav-luxe"><span class="nav-ic">💎</span><span class="nav-label">LUXE</span></div>
+    <div class="nav-item" id="nav-bag"><span class="nav-ic">👜</span><span class="nav-label">Bag</span></div>
   </div>
 </div>
 
-<script src="/static/app.js?v=90"></script>
+<script src="/static/app.js?v=95"></script>
 </body>
 </html>

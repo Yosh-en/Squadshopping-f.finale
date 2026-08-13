@@ -22,6 +22,7 @@ reimplementing (and, previously, mis-implementing) their own tie check.
 """
 
 import random
+import re
 import time
 from collections import Counter
 from datetime import datetime
@@ -86,6 +87,145 @@ OCCASION_TAGS = {
     "Casual Everyday": ["western", "solid"],
     "Monsoon Errands": ["monsoon", "solid"],
 }
+
+
+# ---------------------------------------------------------------------------
+# Category relevance, per occasion
+# ---------------------------------------------------------------------------
+# Tags say what an item's STYLE is; this says whether the KIND of thing is
+# even the right thing to buy for the occasion. Without it, a wedding shelf
+# ranked an ethnic saree and an ethnic tee identically -- both matched the
+# tag, and nothing else distinguished them.
+#
+# Three tiers rather than hand-tuned 0-10 weights per category, for two
+# reasons learned the hard way:
+#
+#   1. RANGE. Scores here have to live in the same range as everything else
+#      the engine adds up (a like is +1.0, a tag match +1.5). A 0-10 category
+#      weight dwarfs those ~10:1: with one, a saree started 12.2 points ahead
+#      of a pair of jeans at a wedding, so the squad would need THIRTEEN net
+#      likes on 'western' before the feed visibly moved. That silently turns
+#      a live recommender into a static lookup table -- the opposite of the
+#      thing being demonstrated.
+#
+#   2. DEFAULTS. With a weights dict, a category nobody remembered to list
+#      scores 0 -- identical to one deliberately marked unsuitable. That's a
+#      silent failure that gets worse every time the catalog grows. Here the
+#      default is explicit (NEUTRAL) and only genuine mismatches are pushed
+#      down, so forgetting a category degrades gracefully instead of hiding
+#      it. Only listing what actually matters also keeps these lists short
+#      enough to read and argue about.
+PRIMARY, SECONDARY, NEUTRAL, UNSUITABLE = 3.0, 1.5, 0.5, -2.0
+
+OCCASION_CATEGORY_TIERS = {
+    "Wedding / Festive Function": {
+        "primary": ["Saree", "Kurta", "Accessory"],
+        "secondary": ["Footwear", "Bag", "Dress", "Beauty", "Co-ord", "Skirt"],
+        "unsuitable": ["Shorts", "Jeans", "Tee", "Jacket"],
+    },
+    "Birthday": {
+        "primary": ["Dress", "Accessory", "Beauty"],
+        "secondary": ["Footwear", "Bag", "Skirt", "Co-ord", "Jumpsuit", "Tee", "Shirt", "Home"],
+        "unsuitable": [],
+    },
+    "Anniversary": {
+        "primary": ["Dress", "Accessory", "Beauty"],
+        "secondary": ["Saree", "Kurta", "Footwear", "Bag", "Skirt", "Co-ord", "Home"],
+        "unsuitable": ["Shorts"],
+    },
+    "Farewell / Graduation": {
+        "primary": ["Dress", "Blazer", "Shirt", "Trousers"],
+        "secondary": ["Footwear", "Bag", "Co-ord", "Accessory", "Jeans"],
+        "unsuitable": ["Shorts", "Home"],
+    },
+    "Beach / Vacation Trip": {
+        "primary": ["Co-ord", "Shorts", "Dress"],
+        "secondary": ["Skirt", "Tee", "Footwear", "Accessory", "Bag", "Jumpsuit"],
+        "unsuitable": ["Blazer", "Saree", "Kurta", "Home", "Trousers"],
+    },
+    "Office / Work": {
+        "primary": ["Shirt", "Trousers", "Blazer"],
+        "secondary": ["Footwear", "Bag", "Dress", "Co-ord", "Accessory"],
+        "unsuitable": ["Shorts", "Home"],
+    },
+    "Casual Everyday": {
+        "primary": ["Tee", "Jeans", "Shirt"],
+        "secondary": ["Dress", "Footwear", "Bag", "Accessory", "Skirt", "Co-ord", "Jacket"],
+        "unsuitable": ["Saree", "Blazer"],
+    },
+    "Monsoon Errands": {
+        "primary": ["Jacket", "Footwear"],
+        "secondary": ["Shirt", "Trousers", "Tee", "Bag", "Jeans"],
+        "unsuitable": ["Saree", "Kurta", "Skirt", "Home"],
+    },
+    # "Just Browsing" is deliberately absent: with no occasion there's no
+    # honest basis for calling one category more relevant than another, so
+    # every item sits at NEUTRAL and the ordering comes from rating first,
+    # then from the squad's actual votes. That's the correct behaviour for
+    # "no occasion set" -- and it's the case where live learning matters
+    # most, since it's the only signal there is.
+}
+
+# Categories that make good GIFTS specifically, as opposed to things you'd
+# buy for yourself. Only applied in a gift room (someone set a recipient),
+# which is exactly when the distinction matters: a scented candle is a fine
+# birthday present and a strange thing to buy yourself for your own birthday.
+# Without this, all 10 Home items sat at NEUTRAL or below in every occasion
+# and effectively never surfaced in the gift flow.
+GIFT_FRIENDLY_CATEGORIES = {"Home", "Beauty", "Accessory"}
+GIFT_BOOST = 1.0
+
+
+def category_relevance(category: str, occasion: str) -> float:
+    tiers = OCCASION_CATEGORY_TIERS.get(occasion)
+    if not tiers:
+        return NEUTRAL
+    if category in tiers["primary"]:
+        return PRIMARY
+    if category in tiers["secondary"]:
+        return SECONDARY
+    if category in tiers["unsuitable"]:
+        return UNSUITABLE
+    return NEUTRAL
+
+
+def relevant_category_ids(catalog: list, room: dict) -> list:
+    """Item ids good enough to sit under the 'Picked for <occasion>' heading.
+
+    The frontend used to keep its OWN copy of which categories suit which
+    occasion, purely to decide that split. Two hand-maintained tables that
+    have to agree always drift -- they already had, with items scoring well
+    in the ranker here and then being filed under 'More to explore' there.
+    The backend owns the tiers, so it answers the question too.
+    """
+    occasion = room.get("occasion")
+    baseline_tags = set(OCCASION_TAGS.get(occasion, []))
+    season = season_hint(room.get("when", ""))
+    if season:
+        baseline_tags |= set(season["tags"])
+    is_gift = bool((room.get("gift_recipient_relation") or "").strip()) and \
+        (room.get("gift_recipient_relation") or "").strip().lower() != "myself"
+
+    ids = []
+    for item in catalog:
+        relevance = category_relevance(item.get("category"), occasion)
+        gift_ok = is_gift and item.get("category") in GIFT_FRIENDLY_CATEGORIES
+        # Deliberately stricter than "not unsuitable". A first pass allowed
+        # anything at SECONDARY or with a matching tag, which put 60+ of 91
+        # items under "Picked for <occasion>" -- at that point the heading
+        # tells you nothing and the split is just noise. To be PICKED, an
+        # item has to be either the right kind of thing outright, or the
+        # right kind AND the right style.
+        if relevance >= PRIMARY:
+            ids.append(item["id"])
+        elif relevance >= SECONDARY and (item.get("tag") in baseline_tags or gift_ok):
+            ids.append(item["id"])
+    return ids
+    lower = name.lower()
+    for keywords, tags in KEYWORD_TAG_RULES:
+        if any(k in lower for k in keywords):
+            return tags
+    return None
 
 
 def infer_tags_for_function(name: str):
@@ -175,6 +315,11 @@ def score_feed(room: dict, catalog: list, persistent_profiles: dict | None = Non
     if season:
         baseline_tags |= set(season["tags"])
 
+    # Someone's set a recipient other than themselves -- see
+    # GIFT_FRIENDLY_CATEGORIES for why that changes what's worth surfacing.
+    relation = (room.get("gift_recipient_relation") or "").strip()
+    is_gift = bool(relation) and relation.lower() != "myself"
+
     # Prefer "participants" (everyone who's ever joined, survives a
     # temporary disconnect) over "members" (only currently-connected
     # sockets) -- we don't want the ranking to shift just because someone's
@@ -194,10 +339,30 @@ def score_feed(room: dict, catalog: list, persistent_profiles: dict | None = Non
             member_tag_pref[member_id][item["tag"]] += 1.0 if vote == "like" else -0.5
 
     def base_score(item: dict) -> float:
-        score = 1.0 if item["tag"] in baseline_tags else 0.0
-        # Small tiebreak nudge so, among equally-relevant items, a better
-        # rated one edges ahead -- never enough to override an actual tag match.
-        score += (item.get("rating", 4.0) - 4.0) * 0.5
+        """Occasion fit before anyone's voted. Every term is deliberately kept
+        in roughly the same range as a vote (+1.0 per like), so the squad's
+        actual swipes visibly move the feed within a few taps instead of being
+        arithmetically buried under a static baseline."""
+        # 1. Is this the right KIND of thing for the occasion? (-2.0 .. +3.0)
+        #    Previously absent entirely: an ethnic saree and an ethnic tee
+        #    both scored 1.0 at a wedding, so the shelf looked ranked but
+        #    barely was.
+        score = category_relevance(item.get("category"), occasion)
+
+        # 2. Is the STYLE right for the occasion/season? (+1.5)
+        if item["tag"] in baseline_tags:
+            score += 1.5
+
+        # 3. Does it make sense as a gift specifically? (+1.0, gift rooms only)
+        if is_gift and item.get("category") in GIFT_FRIENDLY_CATEGORIES:
+            score += GIFT_BOOST
+
+        # 4. Rating, as a tie-break within a tier (0 .. +1.4). Weighted up
+        #    from 0.5x because for "Just Browsing" -- no category tiers, often
+        #    no date either -- this is the ONLY signal before the first vote.
+        #    At 0.5x the whole catalog spanned 0.35 points and the opening
+        #    order was effectively arbitrary.
+        score += (item.get("rating", 4.0) - 4.0) * 2.0
         return score
 
     scores: dict = {}
@@ -381,6 +546,202 @@ def tie_break_advice(item: dict, room: dict, catalog: list) -> dict:
         "headline": headline,
         "reason": reason,
         "ts": time.time(),
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# Chat-directed filter: "Hey AI, something cheaper" / "Hey AI, less black"
+# ---------------------------------------------------------------------------
+# Judge feedback: if two people disagree in chat ("I don't like this, it's
+# too red"), could the AI take a request like "show me something less red"?
+#
+# This is a deterministic keyword parser, deliberately NOT an LLM call --
+# same reasoning as score_feed()'s module note above: a single person typing
+# one request at a time is exactly the case that reasoning calls out as fine
+# to hand an LLM in production. Here it's hand-written matching instead, for
+# two honest reasons: it's free and instant (no API key, no latency, nothing
+# that can fail mid-demo), and it's auditable -- every recognised phrase is
+# visible right here rather than living inside a model's judgment. In
+# production this exact hook is where a call to Myntra's own MyFashionGPT
+# would go; building a competing mini-assistant isn't the point.
+#
+# COLOR HONESTLY: the catalog has no color field on most items -- only the
+# ~20 where the item's own name or emoji states one (see add_color_tags.py).
+# "red" and "green" are recognised words here even though nothing in the
+# catalog is currently tagged either -- so if someone actually types "less
+# red" live, the reply is honest ("nothing's tagged red right now") instead
+# of silently doing nothing, which would look like the feature is broken
+# rather than like the data genuinely doesn't have that attribute yet.
+AI_TRIGGER_RE = re.compile(r"^\s*(hey[,]?\s+)?@?ai\b[,:]?\s*", re.IGNORECASE)
+
+CLEAR_PHRASES = [
+    "clear", "reset", "show everything", "never mind", "nevermind",
+    "remove filter", "start over", "show me everything",
+]
+
+# Only colors actually present in the catalog, plus a couple of commonly-
+# requested ones that AREN'T -- see the honesty note above for why those stay.
+KNOWN_COLORS = [
+    "blue", "white", "gold", "brown", "black", "pink", "yellow",
+    "silver", "rust", "mauve", "nude", "burgundy", "charcoal", "grey", "gray",
+    "red", "green",  # not currently in the catalog -- kept for an honest reply
+]
+CATALOG_COLORS = {
+    "blue", "white", "gold", "brown", "black", "pink", "yellow",
+    "silver", "rust", "mauve", "nude", "burgundy", "charcoal",
+}
+# "grey"/"gray" mean the same thing as "charcoal" here -- nobody's going to
+# type "charcoal" naturally, they'll say "grey."
+COLOR_SYNONYMS = {"grey": "charcoal", "gray": "charcoal"}
+
+PRICE_CHEAPER_WORDS = ["cheap", "cheaper", "budget", "less expensive", "affordable"]
+PRICE_PRICIER_WORDS = ["pricier", "expensive", "premium", "fancier", "fancy", "costlier"]
+RATING_WORDS = ["top rated", "top-rated", "best rated", "well rated", "highly rated", "good reviews"]
+
+# Maps a word someone would actually type onto the tag vocabulary the
+# recommender already understands (see OCCASION_TAGS above) -- never a new
+# vocabulary of its own.
+TAG_SYNONYMS = {
+    "festive": "ethnic", "wedding": "ethnic", "ethnic": "ethnic",
+    "casual": "western", "everyday": "western", "western": "western",
+    "office": "office", "formal": "office", "work": "office",
+    "beachy": "beach", "vacay": "beach", "vacation": "beach", "beach": "beach",
+    "rainy": "monsoon", "monsoon": "monsoon",
+    "party": "party", "glam": "party",
+    "makeup": "beauty", "beauty": "beauty",
+    "floral": "floral", "solid": "solid",
+}
+
+CATEGORY_SYNONYMS = {
+    "dress": "Dress", "dresses": "Dress",
+    "shoe": "Footwear", "shoes": "Footwear", "footwear": "Footwear",
+    "sneaker": "Footwear", "sneakers": "Footwear", "heel": "Footwear", "heels": "Footwear",
+    "bag": "Bag", "bags": "Bag",
+    "jacket": "Jacket", "jackets": "Jacket",
+    "top": "Shirt", "tops": "Shirt", "shirt": "Shirt", "shirts": "Shirt",
+    "jean": "Jeans", "jeans": "Jeans",
+    "kurta": "Kurta", "saree": "Saree",
+    "accessory": "Accessory", "accessories": "Accessory",
+    "jewellery": "Accessory", "jewelry": "Accessory",
+}
+
+
+def parse_ai_chat_intent(text: str):
+    """Returns one of four shapes, deliberately distinct so the caller never
+    has to guess what happened:
+
+        None      -- not directed at the AI at all (no trigger phrase) --
+                     caller should treat this as an ordinary chat message.
+        "clear"   -- directed at the AI, asking to reset the filter.
+        {}        -- directed at the AI, but nothing recognisable in it --
+                     caller should reply asking for a clearer request rather
+                     than silently doing nothing.
+        {...}     -- a parsed filter, always including "summary" (for the
+                     chat reply and the on-screen chip) and "unavailable"
+                     (colors that were asked for but aren't in the catalog --
+                     see the honesty note above).
+    """
+    m = AI_TRIGGER_RE.match(text)
+    if not m:
+        return None
+    rest = text[m.end():].strip().lower()
+    if not rest:
+        return {}
+
+    for phrase in CLEAR_PHRASES:
+        if phrase in rest:
+            return "clear"
+
+    exclude_colors, include_colors, unavailable = [], [], []
+    for color in KNOWN_COLORS:
+        if not re.search(r"\b" + re.escape(color) + r"\b", rest):
+            continue
+        is_exclude = bool(re.search(r"\b(less|no|not|without|avoid)\s+" + re.escape(color) + r"\b", rest))
+        # "grey"/"gray" are the same item attribute as "charcoal" -- resolve
+        # to the canonical name used in the catalog data before checking
+        # availability, or "grey" would report as a color the catalog
+        # doesn't have even though charcoal items genuinely exist.
+        canonical = COLOR_SYNONYMS.get(color, color)
+        if canonical not in CATALOG_COLORS:
+            unavailable.append(color)
+            continue
+        (exclude_colors if is_exclude else include_colors).append(canonical)
+
+    price_direction = None
+    price_word = None
+    for word in PRICE_CHEAPER_WORDS:
+        if re.search(r"\b" + re.escape(word) + r"\b", rest):
+            price_direction, price_word = "cheaper", word
+            break
+    if not price_direction:
+        for word in PRICE_PRICIER_WORDS:
+            if re.search(r"\b" + re.escape(word) + r"\b", rest):
+                price_direction, price_word = "pricier", word
+                break
+
+    min_rating, rating_word = None, None
+    for word in RATING_WORDS:
+        if word in rest:  # these are multi-word phrases already, substring is fine here
+            min_rating, rating_word = 4.4, word
+            break
+
+    # Strip whatever price/rating phrase matched before checking category and
+    # tag words. Without this, "top rated" matches the category word "top"
+    # (-> Shirt) as a false positive, purely because "top" happens to be a
+    # real standalone word inside a phrase that means something else
+    # entirely. Caught by testing, not by inspection -- worth remembering
+    # that word-level substring checks need this guard whenever vocabularies
+    # can overlap like this.
+    rest_for_categories = rest
+    for claimed in filter(None, [price_word, rating_word]):
+        rest_for_categories = rest_for_categories.replace(claimed, " ")
+
+    include_tags = list(dict.fromkeys(
+        tag for word, tag in TAG_SYNONYMS.items()
+        if re.search(r"\b" + re.escape(word) + r"\b", rest_for_categories)
+    ))
+    include_categories = list(dict.fromkeys(
+        cat for word, cat in CATEGORY_SYNONYMS.items()
+        if re.search(r"\b" + re.escape(word) + r"\b", rest_for_categories)
+    ))
+
+    exclude_colors = list(dict.fromkeys(exclude_colors))
+    include_colors = list(dict.fromkeys(include_colors))
+    unavailable = list(dict.fromkeys(unavailable))
+
+    matched_anything = any([
+        exclude_colors, include_colors, include_tags, include_categories,
+        price_direction, min_rating, unavailable,
+    ])
+    if not matched_anything:
+        return {}
+
+    parts = []
+    if exclude_colors:
+        parts.append("excluding " + ", ".join(exclude_colors))
+    if include_colors:
+        parts.append("more " + ", ".join(include_colors))
+    if unavailable and not exclude_colors and not include_colors:
+        parts.append(f"nothing's tagged {', '.join(unavailable)} yet")
+    if include_tags:
+        parts.append(", ".join(include_tags))
+    if include_categories:
+        parts.append(", ".join(include_categories).lower())
+    if price_direction:
+        parts.append(price_direction)
+    if min_rating:
+        parts.append("top rated")
+
+    return {
+        "exclude_colors": exclude_colors,
+        "include_colors": include_colors,
+        "include_tags": include_tags,
+        "include_categories": include_categories,
+        "price_direction": price_direction,
+        "min_rating": min_rating,
+        "unavailable": unavailable,
+        "summary": ", ".join(dict.fromkeys(parts)) or "updated the shelf",
     }
 
 

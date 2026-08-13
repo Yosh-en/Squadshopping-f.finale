@@ -1,47 +1,527 @@
 [
-  { "id": "p1", "name": "Floral Wrap Dress", "brand": "Anouk", "category": "Dress", "tag": "floral", "emoji": "👗", "price": 1899, "mrp": 3199, "rating": 4.3, "icon": "dress", "image": "/static/images/p1-floral-wrap-dress.jpg" },
-  { "id": "p2", "name": "Linen Blend Shirt", "brand": "H&M", "category": "Shirt", "tag": "solid", "emoji": "👔", "price": 1299, "mrp": 1999, "rating": 4.1, "icon": "shirt", "image": "/static/images/p2-linen-shirt.jpg" },
-  { "id": "p3", "name": "Anarkali Kurta Set", "brand": "Libas", "category": "Kurta", "tag": "ethnic", "emoji": "🥻", "price": 2199, "mrp": 3999, "rating": 4.5, "icon": "kurta", "image": "/static/images/p3-anarkali-kurta.jpg" },
-  { "id": "p4", "name": "Classic Denim Jacket", "brand": "Roadster", "category": "Jacket", "tag": "western", "emoji": "🧥", "price": 2499, "mrp": 3499, "rating": 4.2, "icon": "jacket", "image": "/static/images/p4-denim-jacket.jpg" },
-  { "id": "p5", "name": "Resort Co-ord Set", "brand": "Sassafras", "category": "Co-ord", "tag": "beach", "emoji": "🩱", "price": 1799, "mrp": 2799, "rating": 4.0, "icon": "coord", "image": "/static/images/p5-resort-coord.jpg" },
-  { "id": "p6", "name": "Block-Print Saree", "brand": "Sangria", "category": "Saree", "tag": "ethnic", "emoji": "🥻", "price": 3499, "mrp": 5999, "rating": 4.6, "icon": "saree", "image": "/static/images/p6-block-print-saree.jpg" },
-  { "id": "p7", "name": "Oversized Graphic Tee", "brand": "HRX", "category": "Tee", "tag": "western", "emoji": "👕", "price": 799, "mrp": 1299, "rating": 4.0, "icon": "tee", "image": "/static/images/p7-graphic-tee.jpg" },
-  { "id": "p8", "name": "Packable Windcheater", "brand": "Puma", "category": "Jacket", "tag": "monsoon", "emoji": "🌧️", "price": 1999, "mrp": 2999, "rating": 4.4, "icon": "jacket", "image": "/static/images/p8-windcheater.jpg" },
-  { "id": "p9", "name": "Pastel Palazzo Set", "brand": "Global Desi", "category": "Co-ord", "tag": "solid", "emoji": "🎀", "price": 1599, "mrp": 2599, "rating": 4.1, "icon": "coord", "image": "/static/images/p9-palazzo-set.jpg" },
-  { "id": "p10", "name": "Statement Earrings", "brand": "Accessorize", "category": "Accessory", "tag": "ethnic", "emoji": "💎", "price": 599, "mrp": 999, "rating": 4.3, "icon": "earrings", "image": "/static/images/p10-statement-earrings.jpg" },
-  { "id": "p11", "name": "Classic White Sneakers", "brand": "Nike", "category": "Footwear", "tag": "western", "emoji": "👟", "price": 2299, "mrp": 2999, "rating": 4.7, "icon": "sneakers", "image": "/static/images/p11-white-sneakers.jpg" },
-  { "id": "p12", "name": "Floral Maxi Skirt", "brand": "Only", "category": "Skirt", "tag": "floral", "emoji": "🌸", "price": 1699, "mrp": 2499, "rating": 4.2, "icon": "skirt", "image": "/static/images/p12-floral-maxi-skirt.jpg" },
-  { "id": "p13", "name": "Tailored Blazer", "brand": "Vero Moda", "category": "Blazer", "tag": "office", "emoji": "🥼", "price": 3199, "mrp": 4599, "rating": 4.4, "icon": "blazer", "image": "/static/images/p13-tailored-blazer.jpg" },
-  { "id": "p14", "name": "Boho Jumpsuit", "brand": "AND", "category": "Jumpsuit", "tag": "western", "emoji": "🧵", "price": 2599, "mrp": 3999, "rating": 4.1, "icon": "jumpsuit", "image": "/static/images/p14-boho-jumpsuit.jpg" },
-  { "id": "p15", "name": "Sequin Mini Dress", "brand": "Forever 21", "category": "Dress", "tag": "party", "emoji": "🎇", "price": 2299, "mrp": 3999, "rating": 4.2, "icon": "dress", "image": "/static/images/p15-sequin-dress.jpg" },
-  { "id": "p16", "name": "Embellished Clutch", "brand": "Steve Madden", "category": "Accessory", "tag": "party", "emoji": "👛", "price": 899, "mrp": 1499, "rating": 4.4, "icon": "clutch", "image": "/static/images/p16-embellished-clutch.jpg" },
-  { "id": "p17", "name": "Strappy Block Heels", "brand": "Dorothy Perkins", "category": "Footwear", "tag": "party", "emoji": "👠", "price": 1799, "mrp": 2799, "rating": 4.3, "icon": "heels", "image": "/static/images/p17-block-heels.jpg" },
-  { "id": "p18", "name": "Linen Shirt Dress", "brand": "Mango", "category": "Dress", "tag": "solid", "emoji": "👚", "price": 1699, "mrp": 2599, "rating": 4.1, "icon": "dress", "image": "/static/images/p18-linen-shirt-dress.jpg" },
-  { "id": "p19", "name": "Wide-Leg Formal Trousers", "brand": "Vero Moda", "category": "Trousers", "tag": "office", "emoji": "👖", "price": 1899, "mrp": 2999, "rating": 4.3, "icon": "trousers", "image": "/static/images/p19-formal-trousers.jpg" },
-  { "id": "p20", "name": "Packable Rain Poncho", "brand": "Decathlon", "category": "Jacket", "tag": "monsoon", "emoji": "☔", "price": 1299, "mrp": 1999, "rating": 4.5, "icon": "jacket", "image": "/static/images/p20-rain-poncho.jpg" },
-  { "id": "p21", "name": "Quick-Dry Boardshorts", "brand": "H&M", "category": "Shorts", "tag": "beach", "emoji": "🩳", "price": 999, "mrp": 1599, "rating": 4.2, "icon": "shorts", "image": "/static/images/p21-boardshorts.jpg" },
-  { "id": "p22", "name": "Woven Beach Hat", "brand": "Accessorize", "category": "Accessory", "tag": "beach", "emoji": "👒", "price": 699, "mrp": 1099, "rating": 4.0, "icon": "hat", "image": "/static/images/p22-beach-hat.jpg" },
-  { "id": "p23", "name": "Layered Temple Necklace", "brand": "Voylla", "category": "Accessory", "tag": "ethnic", "emoji": "📿", "price": 799, "mrp": 1299, "rating": 4.4, "icon": "necklace", "image": "/static/images/p23-temple-necklace.jpg" },
-  { "id": "p24", "name": "Ankle-Strap Sandals", "brand": "Catwalk", "category": "Footwear", "tag": "western", "emoji": "👡", "price": 1499, "mrp": 2299, "rating": 4.3, "icon": "sandals", "image": "/static/images/p24-ankle-strap-sandals.jpg" },
-  { "id": "p25", "name": "Matte Liquid Lipstick", "brand": "Sugar Cosmetics", "category": "Beauty", "tag": "beauty", "emoji": "💄", "price": 549, "mrp": 699, "rating": 4.3, "icon": "lipstick", "image": "/static/images/p25-lipstick.jpg" },
-  { "id": "p26", "name": "Kajal & Eyeliner Duo", "brand": "Lakme", "category": "Beauty", "tag": "beauty", "emoji": "👁️", "price": 349, "mrp": 499, "rating": 4.2, "icon": "eyeliner", "image": "/static/images/p26-kajal-eyeliner.jpg" },
-  { "id": "p27", "name": "Festive Makeup Palette", "brand": "Maybelline", "category": "Beauty", "tag": "beauty", "emoji": "🎨", "price": 899, "mrp": 1299, "rating": 4.4, "icon": "palette", "image": "/static/images/p27-makeup-palette.jpg" },
-  { "id": "p28", "name": "Rollerball Perfume", "brand": "Bella Vita", "category": "Beauty", "tag": "beauty", "emoji": "🧴", "price": 449, "mrp": 699, "rating": 4.1, "icon": "perfume", "image": "/static/images/p28-perfume.jpg" },
-  { "id": "p29", "name": "Printed Ceramic Mug", "brand": "Chumbak", "category": "Home", "tag": "home", "emoji": "☕", "price": 399, "mrp": 599, "rating": 4.5, "icon": "mug", "image": "/static/images/p29-ceramic-mug.jpg" },
-  { "id": "p30", "name": "Scented Soy Candle", "brand": "Nykaa Home", "category": "Home", "tag": "home", "emoji": "🕯️", "price": 599, "mrp": 899, "rating": 4.3, "icon": "candle", "image": "/static/images/p30-scented-candle.jpg" },
-  { "id": "p31", "name": "Photo Frame Set", "brand": "Hometown", "category": "Home", "tag": "home", "emoji": "🖼️", "price": 699, "mrp": 999, "rating": 4.2, "icon": "frame", "image": "/static/images/p31-photo-frame.jpg" },
-  { "id": "p32", "name": "Embroidered Cushion Cover", "brand": "Home Centre", "category": "Home", "tag": "home", "emoji": "🛋️", "price": 549, "mrp": 799, "rating": 4.4, "icon": "cushion", "image": "/static/images/p32-cushion-cover.jpg" },
-  { "id": "p33", "name": "Quilted Sling Bag", "brand": "Baggit", "category": "Bag", "tag": "western", "emoji": "👜", "price": 1499, "mrp": 2199, "rating": 4.3, "icon": "bag", "image": "/static/images/p33-sling-bag.jpg" },
-  { "id": "p34", "name": "Canvas Tote Bag", "brand": "Fossil", "category": "Bag", "tag": "solid", "emoji": "👝", "price": 1199, "mrp": 1799, "rating": 4.2, "icon": "bag", "image": "/static/images/p34-canvas-tote.jpg" },
-  { "id": "p35", "name": "Structured Backpack", "brand": "Caprese", "category": "Bag", "tag": "office", "emoji": "🎒", "price": 1899, "mrp": 2799, "rating": 4.1, "icon": "backpack", "image": "/static/images/p35-backpack.jpg" },
-  { "id": "p36", "name": "Potli Ethnic Bag", "brand": "Anouk", "category": "Bag", "tag": "ethnic", "emoji": "👛", "price": 799, "mrp": 1199, "rating": 4.4, "icon": "bag", "image": "/static/images/p36-potli-bag.jpg" },
-  { "id": "p37", "name": "Retro Round Sunglasses", "brand": "Fastrack", "category": "Accessory", "tag": "western", "emoji": "🕶️", "price": 899, "mrp": 1299, "rating": 4.3, "icon": "sunglasses", "image": "/static/images/p37-round-sunglasses.jpg" },
-  { "id": "p38", "name": "Gold-Plated Jhumkas", "brand": "Voylla", "category": "Accessory", "tag": "ethnic", "emoji": "👂", "price": 449, "mrp": 699, "rating": 4.5, "icon": "earrings", "image": "/static/images/p38-jhumkas.jpg" },
-  { "id": "p39", "name": "Charm Bangles Set", "brand": "Accessorize", "category": "Accessory", "tag": "ethnic", "emoji": "💫", "price": 599, "mrp": 899, "rating": 4.2, "icon": "bangles", "image": "/static/images/p39-bangles.jpg" },
-  { "id": "p40", "name": "Layered Chain Necklace", "brand": "Zaveri Pearls", "category": "Accessory", "tag": "western", "emoji": "⛓️", "price": 699, "mrp": 999, "rating": 4.3, "icon": "necklace", "image": "/static/images/p40-chain-necklace.jpg" },
-
-
-
+  {
+    "id": "p1",
+    "name": "Floral Wrap Dress",
+    "brand": "Anouk",
+    "category": "Dress",
+    "tag": "floral",
+    "emoji": "👗",
+    "price": 1899,
+    "mrp": 3199,
+    "rating": 4.3,
+    "icon": "dress",
+    "image": "/static/images/p1-floral-wrap-dress.jpg"
+  },
+  {
+    "id": "p2",
+    "name": "Linen Blend Shirt",
+    "brand": "H&M",
+    "category": "Shirt",
+    "tag": "solid",
+    "emoji": "👔",
+    "price": 1299,
+    "mrp": 1999,
+    "rating": 4.1,
+    "icon": "shirt",
+    "image": "/static/images/p2-linen-shirt.jpg"
+  },
+  {
+    "id": "p3",
+    "name": "Anarkali Kurta Set",
+    "brand": "Libas",
+    "category": "Kurta",
+    "tag": "ethnic",
+    "emoji": "🥻",
+    "price": 2199,
+    "mrp": 3999,
+    "rating": 4.5,
+    "icon": "kurta",
+    "image": "/static/images/p3-anarkali-kurta.jpg"
+  },
+  {
+    "id": "p4",
+    "name": "Classic Denim Jacket",
+    "brand": "Roadster",
+    "category": "Jacket",
+    "tag": "western",
+    "emoji": "🧥",
+    "price": 2499,
+    "mrp": 3499,
+    "rating": 4.2,
+    "icon": "jacket",
+    "image": "/static/images/p4-denim-jacket.jpg",
+    "color": "blue"
+  },
+  {
+    "id": "p5",
+    "name": "Resort Co-ord Set",
+    "brand": "Sassafras",
+    "category": "Co-ord",
+    "tag": "beach",
+    "emoji": "🩱",
+    "price": 1799,
+    "mrp": 2799,
+    "rating": 4.0,
+    "icon": "coord",
+    "image": "/static/images/p5-resort-coord.jpg"
+  },
+  {
+    "id": "p6",
+    "name": "Block-Print Saree",
+    "brand": "Sangria",
+    "category": "Saree",
+    "tag": "ethnic",
+    "emoji": "🥻",
+    "price": 3499,
+    "mrp": 5999,
+    "rating": 4.6,
+    "icon": "saree",
+    "image": "/static/images/p6-block-print-saree.jpg"
+  },
+  {
+    "id": "p7",
+    "name": "Oversized Graphic Tee",
+    "brand": "HRX",
+    "category": "Tee",
+    "tag": "western",
+    "emoji": "👕",
+    "price": 799,
+    "mrp": 1299,
+    "rating": 4.0,
+    "icon": "tee",
+    "image": "/static/images/p7-graphic-tee.jpg"
+  },
+  {
+    "id": "p8",
+    "name": "Packable Windcheater",
+    "brand": "Puma",
+    "category": "Jacket",
+    "tag": "monsoon",
+    "emoji": "🌧️",
+    "price": 1999,
+    "mrp": 2999,
+    "rating": 4.4,
+    "icon": "jacket",
+    "image": "/static/images/p8-windcheater.jpg"
+  },
+  {
+    "id": "p9",
+    "name": "Pastel Palazzo Set",
+    "brand": "Global Desi",
+    "category": "Co-ord",
+    "tag": "solid",
+    "emoji": "🎀",
+    "price": 1599,
+    "mrp": 2599,
+    "rating": 4.1,
+    "icon": "coord",
+    "image": "/static/images/p9-palazzo-set.jpg"
+  },
+  {
+    "id": "p10",
+    "name": "Statement Earrings",
+    "brand": "Accessorize",
+    "category": "Accessory",
+    "tag": "ethnic",
+    "emoji": "💎",
+    "price": 599,
+    "mrp": 999,
+    "rating": 4.3,
+    "icon": "earrings",
+    "image": "/static/images/p10-statement-earrings.jpg"
+  },
+  {
+    "id": "p11",
+    "name": "Classic White Sneakers",
+    "brand": "Nike",
+    "category": "Footwear",
+    "tag": "western",
+    "emoji": "👟",
+    "price": 2299,
+    "mrp": 2999,
+    "rating": 4.7,
+    "icon": "sneakers",
+    "image": "/static/images/p11-white-sneakers.jpg",
+    "color": "white"
+  },
+  {
+    "id": "p12",
+    "name": "Floral Maxi Skirt",
+    "brand": "Only",
+    "category": "Skirt",
+    "tag": "floral",
+    "emoji": "🌸",
+    "price": 1699,
+    "mrp": 2499,
+    "rating": 4.2,
+    "icon": "skirt",
+    "image": "/static/images/p12-floral-maxi-skirt.jpg"
+  },
+  {
+    "id": "p13",
+    "name": "Tailored Blazer",
+    "brand": "Vero Moda",
+    "category": "Blazer",
+    "tag": "office",
+    "emoji": "🥼",
+    "price": 3199,
+    "mrp": 4599,
+    "rating": 4.4,
+    "icon": "blazer",
+    "image": "/static/images/p13-tailored-blazer.jpg"
+  },
+  {
+    "id": "p14",
+    "name": "Boho Jumpsuit",
+    "brand": "AND",
+    "category": "Jumpsuit",
+    "tag": "western",
+    "emoji": "🧵",
+    "price": 2599,
+    "mrp": 3999,
+    "rating": 4.1,
+    "icon": "jumpsuit",
+    "image": "/static/images/p14-boho-jumpsuit.jpg"
+  },
+  {
+    "id": "p15",
+    "name": "Sequin Mini Dress",
+    "brand": "Forever 21",
+    "category": "Dress",
+    "tag": "party",
+    "emoji": "🎇",
+    "price": 2299,
+    "mrp": 3999,
+    "rating": 4.2,
+    "icon": "dress",
+    "image": "/static/images/p15-sequin-dress.jpg"
+  },
+  {
+    "id": "p16",
+    "name": "Embellished Clutch",
+    "brand": "Steve Madden",
+    "category": "Accessory",
+    "tag": "party",
+    "emoji": "👛",
+    "price": 899,
+    "mrp": 1499,
+    "rating": 4.4,
+    "icon": "clutch",
+    "image": "/static/images/p16-embellished-clutch.jpg"
+  },
+  {
+    "id": "p17",
+    "name": "Strappy Block Heels",
+    "brand": "Dorothy Perkins",
+    "category": "Footwear",
+    "tag": "party",
+    "emoji": "👠",
+    "price": 1799,
+    "mrp": 2799,
+    "rating": 4.3,
+    "icon": "heels",
+    "image": "/static/images/p17-block-heels.jpg"
+  },
+  {
+    "id": "p18",
+    "name": "Linen Shirt Dress",
+    "brand": "Mango",
+    "category": "Dress",
+    "tag": "solid",
+    "emoji": "👚",
+    "price": 1699,
+    "mrp": 2599,
+    "rating": 4.1,
+    "icon": "dress",
+    "image": "/static/images/p18-linen-shirt-dress.jpg"
+  },
+  {
+    "id": "p19",
+    "name": "Wide-Leg Formal Trousers",
+    "brand": "Vero Moda",
+    "category": "Trousers",
+    "tag": "office",
+    "emoji": "👖",
+    "price": 1899,
+    "mrp": 2999,
+    "rating": 4.3,
+    "icon": "trousers",
+    "image": "/static/images/p19-formal-trousers.jpg"
+  },
+  {
+    "id": "p20",
+    "name": "Packable Rain Poncho",
+    "brand": "Decathlon",
+    "category": "Jacket",
+    "tag": "monsoon",
+    "emoji": "☔",
+    "price": 1299,
+    "mrp": 1999,
+    "rating": 4.5,
+    "icon": "jacket",
+    "image": "/static/images/p20-rain-poncho.jpg"
+  },
+  {
+    "id": "p21",
+    "name": "Quick-Dry Boardshorts",
+    "brand": "H&M",
+    "category": "Shorts",
+    "tag": "beach",
+    "emoji": "🩳",
+    "price": 999,
+    "mrp": 1599,
+    "rating": 4.2,
+    "icon": "shorts",
+    "image": "/static/images/p21-boardshorts.jpg"
+  },
+  {
+    "id": "p22",
+    "name": "Woven Beach Hat",
+    "brand": "Accessorize",
+    "category": "Accessory",
+    "tag": "beach",
+    "emoji": "👒",
+    "price": 699,
+    "mrp": 1099,
+    "rating": 4.0,
+    "icon": "hat",
+    "image": "/static/images/p22-beach-hat.jpg"
+  },
+  {
+    "id": "p23",
+    "name": "Layered Temple Necklace",
+    "brand": "Voylla",
+    "category": "Accessory",
+    "tag": "ethnic",
+    "emoji": "📿",
+    "price": 799,
+    "mrp": 1299,
+    "rating": 4.4,
+    "icon": "necklace",
+    "image": "/static/images/p23-temple-necklace.jpg"
+  },
+  {
+    "id": "p24",
+    "name": "Ankle-Strap Sandals",
+    "brand": "Catwalk",
+    "category": "Footwear",
+    "tag": "western",
+    "emoji": "👡",
+    "price": 1499,
+    "mrp": 2299,
+    "rating": 4.3,
+    "icon": "sandals",
+    "image": "/static/images/p24-ankle-strap-sandals.jpg"
+  },
+  {
+    "id": "p25",
+    "name": "Matte Liquid Lipstick",
+    "brand": "Sugar Cosmetics",
+    "category": "Beauty",
+    "tag": "beauty",
+    "emoji": "💄",
+    "price": 549,
+    "mrp": 699,
+    "rating": 4.3,
+    "icon": "lipstick",
+    "image": "/static/images/p25-lipstick.jpg"
+  },
+  {
+    "id": "p26",
+    "name": "Kajal & Eyeliner Duo",
+    "brand": "Lakme",
+    "category": "Beauty",
+    "tag": "beauty",
+    "emoji": "👁️",
+    "price": 349,
+    "mrp": 499,
+    "rating": 4.2,
+    "icon": "eyeliner",
+    "image": "/static/images/p26-kajal-eyeliner.jpg"
+  },
+  {
+    "id": "p27",
+    "name": "Festive Makeup Palette",
+    "brand": "Maybelline",
+    "category": "Beauty",
+    "tag": "beauty",
+    "emoji": "🎨",
+    "price": 899,
+    "mrp": 1299,
+    "rating": 4.4,
+    "icon": "palette",
+    "image": "/static/images/p27-makeup-palette.jpg"
+  },
+  {
+    "id": "p28",
+    "name": "Rollerball Perfume",
+    "brand": "Bella Vita",
+    "category": "Beauty",
+    "tag": "beauty",
+    "emoji": "🧴",
+    "price": 449,
+    "mrp": 699,
+    "rating": 4.1,
+    "icon": "perfume",
+    "image": "/static/images/p28-perfume.jpg"
+  },
+  {
+    "id": "p29",
+    "name": "Printed Ceramic Mug",
+    "brand": "Chumbak",
+    "category": "Home",
+    "tag": "home",
+    "emoji": "☕",
+    "price": 399,
+    "mrp": 599,
+    "rating": 4.5,
+    "icon": "mug",
+    "image": "/static/images/p29-ceramic-mug.jpg"
+  },
+  {
+    "id": "p30",
+    "name": "Scented Soy Candle",
+    "brand": "Nykaa Home",
+    "category": "Home",
+    "tag": "home",
+    "emoji": "🕯️",
+    "price": 599,
+    "mrp": 899,
+    "rating": 4.3,
+    "icon": "candle",
+    "image": "/static/images/p30-scented-candle.jpg"
+  },
+  {
+    "id": "p31",
+    "name": "Photo Frame Set",
+    "brand": "Hometown",
+    "category": "Home",
+    "tag": "home",
+    "emoji": "🖼️",
+    "price": 699,
+    "mrp": 999,
+    "rating": 4.2,
+    "icon": "frame",
+    "image": "/static/images/p31-photo-frame.jpg"
+  },
+  {
+    "id": "p32",
+    "name": "Embroidered Cushion Cover",
+    "brand": "Home Centre",
+    "category": "Home",
+    "tag": "home",
+    "emoji": "🛋️",
+    "price": 549,
+    "mrp": 799,
+    "rating": 4.4,
+    "icon": "cushion",
+    "image": "/static/images/p32-cushion-cover.jpg"
+  },
+  {
+    "id": "p33",
+    "name": "Quilted Sling Bag",
+    "brand": "Baggit",
+    "category": "Bag",
+    "tag": "western",
+    "emoji": "👜",
+    "price": 1499,
+    "mrp": 2199,
+    "rating": 4.3,
+    "icon": "bag",
+    "image": "/static/images/p33-sling-bag.jpg"
+  },
+  {
+    "id": "p34",
+    "name": "Canvas Tote Bag",
+    "brand": "Fossil",
+    "category": "Bag",
+    "tag": "solid",
+    "emoji": "👝",
+    "price": 1199,
+    "mrp": 1799,
+    "rating": 4.2,
+    "icon": "bag",
+    "image": "/static/images/p34-canvas-tote.jpg"
+  },
+  {
+    "id": "p35",
+    "name": "Structured Backpack",
+    "brand": "Caprese",
+    "category": "Bag",
+    "tag": "office",
+    "emoji": "🎒",
+    "price": 1899,
+    "mrp": 2799,
+    "rating": 4.1,
+    "icon": "backpack",
+    "image": "/static/images/p35-backpack.jpg"
+  },
+  {
+    "id": "p36",
+    "name": "Potli Ethnic Bag",
+    "brand": "Anouk",
+    "category": "Bag",
+    "tag": "ethnic",
+    "emoji": "👛",
+    "price": 799,
+    "mrp": 1199,
+    "rating": 4.4,
+    "icon": "bag",
+    "image": "/static/images/p36-potli-bag.jpg"
+  },
+  {
+    "id": "p37",
+    "name": "Retro Round Sunglasses",
+    "brand": "Fastrack",
+    "category": "Accessory",
+    "tag": "western",
+    "emoji": "🕶️",
+    "price": 899,
+    "mrp": 1299,
+    "rating": 4.3,
+    "icon": "sunglasses",
+    "image": "/static/images/p37-round-sunglasses.jpg"
+  },
+  {
+    "id": "p38",
+    "name": "Gold-Plated Jhumkas",
+    "brand": "Voylla",
+    "category": "Accessory",
+    "tag": "ethnic",
+    "emoji": "👂",
+    "price": 449,
+    "mrp": 699,
+    "rating": 4.5,
+    "icon": "earrings",
+    "image": "/static/images/p38-jhumkas.jpg",
+    "color": "gold"
+  },
+  {
+    "id": "p39",
+    "name": "Charm Bangles Set",
+    "brand": "Accessorize",
+    "category": "Accessory",
+    "tag": "ethnic",
+    "emoji": "💫",
+    "price": 599,
+    "mrp": 899,
+    "rating": 4.2,
+    "icon": "bangles",
+    "image": "/static/images/p39-bangles.jpg"
+  },
+  {
+    "id": "p40",
+    "name": "Layered Chain Necklace",
+    "brand": "Zaveri Pearls",
+    "category": "Accessory",
+    "tag": "western",
+    "emoji": "⛓️",
+    "price": 699,
+    "mrp": 999,
+    "rating": 4.3,
+    "icon": "necklace",
+    "image": "/static/images/p40-chain-necklace.jpg"
+  },
   {
     "id": "p41",
     "name": "Wide Leg Vintage Wash Jeans",
@@ -81,7 +561,6 @@
     "icon": "tee",
     "image": "/static/images/p43-oversized-monster-tee.jpg"
   },
-
   {
     "id": "p44",
     "name": "Embellished Sheer Bell Sleeve Top",
@@ -106,7 +585,8 @@
     "mrp": 799,
     "rating": 4.5,
     "icon": "earrings",
-    "image": "/static/images/p45-antique-gold-jhumka-set.jpg"
+    "image": "/static/images/p45-antique-gold-jhumka-set.jpg",
+    "color": "gold"
   },
   {
     "id": "p46",
@@ -132,7 +612,8 @@
     "mrp": 1299,
     "rating": 4.4,
     "icon": "shirt",
-    "image": "/static/images/p47-polka-dot-tie-top.jpg"
+    "image": "/static/images/p47-polka-dot-tie-top.jpg",
+    "color": "white"
   },
   {
     "id": "p48",
@@ -158,7 +639,8 @@
     "mrp": 1399,
     "rating": 4.1,
     "icon": "shirt",
-    "image": "/static/images/p49-pearl-embellished-top.jpg"
+    "image": "/static/images/p49-pearl-embellished-top.jpg",
+    "color": "charcoal"
   },
   {
     "id": "p50",
@@ -184,7 +666,8 @@
     "mrp": 2099,
     "rating": 4,
     "icon": "shirt",
-    "image": "/static/images/p51-pinstripe-puff-sleeve-top.jpg"
+    "image": "/static/images/p51-pinstripe-puff-sleeve-top.jpg",
+    "color": "white"
   },
   {
     "id": "p52",
@@ -197,7 +680,8 @@
     "mrp": 2999,
     "rating": 4.5,
     "icon": "trousers",
-    "image": "/static/images/p52-low-rise-flare-jeans.jpg"
+    "image": "/static/images/p52-low-rise-flare-jeans.jpg",
+    "color": "blue"
   },
   {
     "id": "p53",
@@ -210,7 +694,8 @@
     "mrp": 4999,
     "rating": 4.6,
     "icon": "saree",
-    "image": "/static/images/p53-sharara-suit-dupatta.jpg"
+    "image": "/static/images/p53-sharara-suit-dupatta.jpg",
+    "color": "pink"
   },
   {
     "id": "p54",
@@ -236,7 +721,8 @@
     "mrp": 999,
     "rating": 4.3,
     "icon": "jacket",
-    "image": "/static/images/p55-crochet-cardigan.jpg"
+    "image": "/static/images/p55-crochet-cardigan.jpg",
+    "color": "yellow"
   },
   {
     "id": "p56",
@@ -288,7 +774,8 @@
     "mrp": 499,
     "rating": 4.5,
     "icon": "earrings",
-    "image": "/static/images/p59-oxidised-jhumka-earrings.jpg"
+    "image": "/static/images/p59-oxidised-jhumka-earrings.jpg",
+    "color": "silver"
   },
   {
     "id": "p60",
@@ -314,7 +801,8 @@
     "mrp": 6499,
     "rating": 4.6,
     "icon": "kurta",
-    "image": "/static/images/p61-embroidered-mens-kurta.jpg"
+    "image": "/static/images/p61-embroidered-mens-kurta.jpg",
+    "color": "rust"
   },
   {
     "id": "p62",
@@ -353,7 +841,8 @@
     "mrp": 599,
     "rating": 4.3,
     "icon": "bangles",
-    "image": "/static/images/p64-mauve-stone-bangles-set.jpg"
+    "image": "/static/images/p64-mauve-stone-bangles-set.jpg",
+    "color": "mauve"
   },
   {
     "id": "p65",
@@ -379,7 +868,8 @@
     "mrp": 3999,
     "rating": 4.3,
     "icon": "necklace",
-    "image": "/static/images/p66-steel-square-dial-watch.jpg"
+    "image": "/static/images/p66-steel-square-dial-watch.jpg",
+    "color": "silver"
   },
   {
     "id": "p67",
@@ -392,7 +882,8 @@
     "mrp": 1999,
     "rating": 4.2,
     "icon": "clutch",
-    "image": "/static/images/p67-leather-bifold-cardholder.jpg"
+    "image": "/static/images/p67-leather-bifold-cardholder.jpg",
+    "color": "brown"
   },
   {
     "id": "p68",
@@ -433,7 +924,6 @@
     "icon": "backpack",
     "image": "/static/images/p70-fluffy-sheep-plush-backpack.jpg"
   },
-
   {
     "id": "p71",
     "name": "Smoky Nude Eyeshadow Palette",
@@ -445,7 +935,8 @@
     "mrp": 599,
     "rating": 4.5,
     "icon": "palette",
-    "image": "/static/images/p71-nude-eyeshadow-palette.jpg"
+    "image": "/static/images/p71-nude-eyeshadow-palette.jpg",
+    "color": "nude"
   },
   {
     "id": "p72",
@@ -484,7 +975,8 @@
     "mrp": 1799,
     "rating": 4.4,
     "icon": "dress",
-    "image": "/static/images/p74-contrast-trim-slip-dress.jpg"
+    "image": "/static/images/p74-contrast-trim-slip-dress.jpg",
+    "color": "black"
   },
   {
     "id": "p75",
@@ -536,7 +1028,8 @@
     "mrp": 299,
     "rating": 4.7,
     "icon": "eyeliner",
-    "image": "/static/images/p78-eyelash-curler.jpg"
+    "image": "/static/images/p78-eyelash-curler.jpg",
+    "color": "gold"
   },
   {
     "id": "p79",
@@ -575,7 +1068,8 @@
     "mrp": 3999,
     "rating": 4.5,
     "icon": "coord",
-    "image": "/static/images/p81-vest-trouser-coord.jpg"
+    "image": "/static/images/p81-vest-trouser-coord.jpg",
+    "color": "brown"
   },
   {
     "id": "p82",
@@ -679,7 +1173,8 @@
     "mrp": 2799,
     "rating": 4.4,
     "icon": "heels",
-    "image": "/static/images/p89-burgundy-slingback-pumps.jpg"
+    "image": "/static/images/p89-burgundy-slingback-pumps.jpg",
+    "color": "burgundy"
   },
   {
     "id": "p90",
