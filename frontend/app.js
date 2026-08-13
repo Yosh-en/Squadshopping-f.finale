@@ -10,12 +10,14 @@ function getOrCreateClientId(){
 
 const state = {
   clientId: getOrCreateClientId(), name: '', roomId: '', catalog: [], room: null, ws: null, aiNote: '', searchTerm: '',
-  knownTiedIds: new Set(), tieExplainerShown: false, chatOpen: false, lastChatCount: 0, hasInitializedTies: false, voiceMessages: [],
+  knownTiedIds: new Set(), chatOpen: false, lastChatCount: 0, hasInitializedTies: false, voiceMessages: [],
   rouletteItemIds: null, rouletteLanded: false, pendingTieItemId: null, demoFabMsgTimer: null,
   knownCartIds: new Set(), hasInitializedCart: false,
   typingDebounceTimer: null, isCurrentlyTypingSignal: false,
   feedScores: {},
-  dismissedTieNudges: new Set(),
+  autoShownTieIds: new Set(),
+  tieModalItemId: null,
+  tieModalView: 'choose',
   consideringOthers: [],
   returnToCheckoutAfterJump: false,
   roulettePulsedCartIds: new Set(),
@@ -143,7 +145,7 @@ function applyUserNameToUI(name){
 
 function showOnboardingLoginStep(){
   $('#onboarding-step-login').style.display = 'block';
-  $('#onboarding-login-error').textContent = '';
+  clearCollisionPrompt();
   $('#onboarding-modal').classList.add('show');
 }
 
@@ -161,26 +163,17 @@ function closeOnboarding(){ $('#onboarding-modal').classList.remove('show'); }
 // so pretending to verify a password would be a false promise, not a real
 // safeguard. The field stays visually (it's what makes this read as a real
 // login rather than a magic-link gimmick).
-$('#onboarding-login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-
-  const name = $('#onboarding-name').value.trim();
+// Actually performs the login call. Split out from the submit handler so
+// the collision-confirmation buttons below can re-call it with
+// confirm_existing/confirm_new set, without duplicating the fetch logic.
+async function attemptLogin(name, extra = {}){
   const errorEl = $('#onboarding-login-error');
-
-  errorEl.textContent = '';
-
-  if(!name){
-    errorEl.textContent = 'Please enter your name.';
-    return;
-  }
-
   try {
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, ...extra })
     });
-
     const data = await res.json();
 
     if (res.ok && data.ok) {
@@ -188,12 +181,82 @@ $('#onboarding-login-form').addEventListener('submit', async (e) => {
       setStoredUserName(data.name || name);
       applyUserNameToUI(data.name || name);
       closeOnboarding();
-    } else {
-      errorEl.textContent = data.error || 'Could not continue. Please try again.';
+      return;
     }
+
+    if (data.error === 'name_taken') {
+      // A real person is already using this name -- don't guess. Ask once,
+      // plainly, instead of silently merging into whoever that is. This is
+      // the ONLY extra step in the whole flow, and only ever appears on an
+      // actual collision -- a unique name still logs straight in.
+      //
+      // The LOGIN button is hidden while this is pending (see the
+      // .collision-pending CSS): leaving it visible put three buttons in a
+      // row with no breathing space, and tapping it would only have
+      // re-asked the identical question. The two answers ARE the submit now.
+      errorEl.classList.add('login-collision');
+      errorEl.innerHTML = `
+        <div class="login-collision-q">There's already a squad member named <b>${escapeHtml(data.existing_name)}</b>. Is that you?</div>
+        <div class="login-collision-actions">
+          <button type="button" class="login-collision-yes" data-collision-name="${escapeHtml(name)}">Yes, that's me</button>
+          <button type="button" class="login-collision-no" data-collision-name="${escapeHtml(name)}">No, that's someone else</button>
+        </div>`;
+      $('#onboarding-login-form').classList.add('collision-pending');
+      return;
+    }
+
+    clearCollisionPrompt();
+    errorEl.textContent = data.error || 'Could not continue. Please try again.';
   } catch (err) {
     console.error(err);
+    clearCollisionPrompt();
     errorEl.textContent = 'Unable to connect. Please try again.';
+  }
+}
+
+// Puts the form back to its normal one-button state.
+function clearCollisionPrompt(){
+  const errorEl = $('#onboarding-login-error');
+  errorEl.classList.remove('login-collision');
+  errorEl.innerHTML = '';
+  $('#onboarding-login-form').classList.remove('collision-pending');
+}
+
+// Editing the name makes the pending question stale -- it was about the old
+// name. Clear it so LOGIN comes back rather than leaving them staring at a
+// question that no longer matches what's in the box.
+$('#onboarding-name').addEventListener('input', clearCollisionPrompt);
+
+$('#onboarding-login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const name = $('#onboarding-name').value.trim();
+  const errorEl = $('#onboarding-login-error');
+  errorEl.textContent = '';
+
+  if(!name){
+    errorEl.textContent = 'Please enter your name.';
+    return;
+  }
+
+  await attemptLogin(name);
+});
+
+// Handles the two collision-confirmation buttons rendered above. Delegated
+// onto the error slot itself since its content is replaced dynamically.
+$('#onboarding-login-error').addEventListener('click', (e) => {
+  const yesBtn = e.target.closest('.login-collision-yes');
+  if(yesBtn){
+    const name = yesBtn.dataset.collisionName;
+    clearCollisionPrompt();
+    attemptLogin(name, { confirm_existing: true });
+    return;
+  }
+  const noBtn = e.target.closest('.login-collision-no');
+  if(noBtn){
+    const name = noBtn.dataset.collisionName;
+    clearCollisionPrompt();
+    attemptLogin(name, { confirm_new: true });
   }
 });
 
@@ -293,20 +356,21 @@ function resetPerRoomState(){
   if(searchInput) searchInput.value = '';
 
   state.knownTiedIds = new Set();
-  state.tieExplainerShown = false;
   state.hasInitializedTies = false;
   state.knownCartIds = new Set();
   state.hasInitializedCart = false;
   state.lastChatCount = 0;
   state.voiceMessages = [];
   state.feedScores = {};
-  state.dismissedTieNudges = new Set();
+  state.autoShownTieIds = new Set();
+  state.tieModalItemId = null;
+  state.tieModalView = 'choose';
+  const tieModal = $('#tie-modal');
+  if(tieModal) tieModal.classList.remove('show');
   state.consideringOthers = [];
   state.returnToCheckoutAfterJump = false;
   const returnBtn = $('#return-to-checkout');
   if(returnBtn) returnBtn.classList.remove('show');
-  const nudge = $('#tie-nudge-banner');
-  if(nudge) nudge.classList.remove('show');
   if(reservationTickInterval){ clearInterval(reservationTickInterval); reservationTickInterval = null; }
   toastQueue = [];
   toastCurrentlyShowing = false;
@@ -488,7 +552,6 @@ function rouletteSlotContent(item, room){
   const likeCount = Object.values(votes).filter(v => v === 'like').length;
   const myVote = votes[state.clientId];
   const inCart = room.cart.includes(item.id);
-  const advice = (room.tie_advice || {})[item.id];
   const participantCount = participantCountOf(room);
   const voteStatus = computeVoteStatus(votes, participantCount);
   const isTied = !inCart && voteStatus === 'deadlocked';
@@ -514,12 +577,12 @@ function rouletteSlotContent(item, room){
       </button>
     </div>`;
 
-  // Compact version of the shelf card's advisory footer -- a slot is far too
-  // narrow for the full for/against lists, so it shows the lean plus a tap
-  // through to chat. Same rule as everywhere else: advice never decides.
-  const rouletteAdviceHtml = () => advice
-    ? `<div class="roulette-slot-advice ${advice.verdict === 'yes' ? 'verdict-yes' : 'verdict-no'}">${advice.verdict === 'yes' ? '👍 Keep it' : '👎 Let it go'}<button class="roulette-slot-discuss-btn" data-discuss-item="${item.id}">💬 Discuss</button></div>`
-    : `<div class="roulette-slot-contested-actions"><button class="roulette-slot-discuss-btn" data-discuss-item="${item.id}">💬 Discuss</button><button class="roulette-slot-read-btn" data-advice-item="${item.id}">✦ My read</button></div>`;
+  // A slot is ~110px wide -- far too narrow for advice text, so it just gets
+  // the same single entry point the shelf card uses. Tapping it closes the
+  // roulette and opens the tie popup (see the #roulette-reel handler), rather
+  // than stacking one overlay on another.
+  const rouletteTieBtnHtml = () =>
+    `<button class="roulette-slot-tie-btn" data-tie-open="${item.id}">Break the tie</button>`;
 
   let footer;
 
@@ -537,7 +600,7 @@ function rouletteSlotContent(item, room){
       // to the real tie-breaker rather than counting for nothing.
       footer = rouletteVoteButtons()
         + `<div class="roulette-slot-status objected">⚠ ${likeCount}-${passCount}, objected</div>`
-        + rouletteAdviceHtml();
+        + rouletteTieBtnHtml();
     } else {
       const remainingVoters = Math.max(0, participantCount - likeCount);
       const waitNote = remainingVoters > 0
@@ -546,7 +609,7 @@ function rouletteSlotContent(item, room){
       footer = rouletteVoteButtons() + `<div class="roulette-slot-status added">✓ In cart${waitNote}</div>`;
     }
   } else if(isTied){
-    footer = rouletteVoteButtons() + rouletteAdviceHtml();
+    footer = rouletteVoteButtons() + rouletteTieBtnHtml();
   } else {
     footer = rouletteVoteButtons() + (likeCount ? `<div class="roulette-slot-likes">${likeCount} liked</div>` : '');
   }
@@ -686,7 +749,23 @@ function showEventToast(event, onDone){
   el.classList.add('show');
   clearTimeout(toastTimer);
   el._toastDone = onDone || null;
-  toastTimer = setTimeout(() => dismissCurrentToast(), event.item_id ? 6500 : 4000);
+  toastTimer = setTimeout(() => dismissCurrentToast(), toastDurationFor(event));
+}
+
+// A toast you're meant to ACT on needs long enough to notice it, read whose
+// name it is, and reach up and tap it -- 6.5s was routinely gone before that
+// happened, especially mid-scroll. Non-tappable toasts are pure information
+// and can stay brief.
+//
+// The exception is a burst: with 6 people voting at once, several toasts can
+// queue up, and holding each one for 11s would put the last one ~a minute
+// behind the thing it's describing. So when others are already waiting, they
+// go quick -- a stale toast is worse than a missed one, and the card itself
+// still shows the vote either way.
+function toastDurationFor(event){
+  const backedUp = toastQueue.length > 0;
+  if(!event.item_id) return backedUp ? 2600 : 4000;
+  return backedUp ? 4500 : 11000;
 }
 
 function dismissCurrentToast(){
@@ -756,11 +835,6 @@ function cardHtml(item, room, isTopPick=false){
   const inCart = room.cart.includes(item.id);
   const discount = Math.round((1 - item.price / item.mrp) * 100);
   const justLaunched = ['p1','p4','p9','p13'].includes(item.id);
-  // Advice the squad asked for on this item, if any. Note this NEVER locks
-  // an outcome -- unlike the old tie_breaks it replaced, a card with advice
-  // on it is still fully votable, because the squad is still the only thing
-  // that decides. See tie_break_advice() in ai_coordinator.py.
-  const advice = (room.tie_advice || {})[item.id];
   const participantCount = participantCountOf(room);
   const voteStatus = computeVoteStatus(votes, participantCount);
   // A real deadlock now only means "everyone's voted, exact 50/50" -- see
@@ -807,26 +881,33 @@ function cardHtml(item, room, isTopPick=false){
   // asking for it dishonest. See vote_status() in ai_coordinator.py.
   const isContestedInCart = inCart && passCount > 0;
 
+  // One entry point, one button, whether or not advice has been asked for
+  // yet. Everything the tie needs -- the split, the options, the AI's read --
+  // lives in the popup instead of being crammed into a grid card, which is
+  // what forced 8px type and stacked buttons before.
+  const tieBreakRow = `
+    <div class="tie-break-row">
+      <button class="tie-break-btn" data-tie-open="${item.id}">Break the tie</button>
+    </div>`;
+
   let footer;
   if(isContestedInCart){
     footer = voteButtons('cart-actions')
-      + `<div class="cart-objection-note">⚠ In the cart on a ${likeCount}-${passCount} majority -- ${passCount === 1 ? '1 person' : passCount + ' people'} objected</div>`
-      + (advice ? adviceHtml(advice, item.id) : contestedActionsHtml(item.id));
+      + `<div class="cart-objection-note">⚠ In on a ${likeCount}-${passCount} majority</div>`
+      + tieBreakRow;
   } else if(inCart){
     const waitNote = remainingVoters > 0
       ? ` · waiting on ${remainingVoters} more vote${remainingVoters === 1 ? '' : 's'}`
       : '';
     footer = voteButtons('cart-actions') + `<div class="cart-locked-note">✓ In squad cart${waitNote}</div>`;
   } else if(isTied){
-    // Changing your own vote is still the natural resolution, and the vote
-    // row stays exactly where it is on every other card. Below it: chat
-    // (offered, never forced) and the AI's read (opt-in, advisory only).
-    // Nothing here can move the item on its own -- only votes do that.
-    footer = voteButtons()
-      + (advice ? adviceHtml(advice, item.id) : contestedActionsHtml(item.id));
+    // Vote row stays exactly where it is on every other card -- changing your
+    // own vote is still the natural resolution. The tie-break button is an
+    // extra option below it, not a replacement for voting.
+    footer = voteButtons() + tieBreakRow;
   } else {
     footer = voteButtons() + (showProgress
-      ? `<div class="mixed-progress-note">${likeCount} liked, ${passCount} passed -- waiting on ${stillWaitingOn} more <button class="mini-tie-link" data-tie-item="${item.id}">settle now →</button></div>`
+      ? `<div class="mixed-progress-note">${likeCount} liked, ${passCount} passed -- waiting on ${stillWaitingOn} more</div>`
       : '');
   }
 
@@ -855,37 +936,135 @@ function cardHtml(item, room, isTopPick=false){
   `;
 }
 
-// Renders the AI's read: a plain yes or no plus the one reason that decided
-// it. Went through two rounds of feedback to get here -- first it DECIDED for
-// the squad (rejected: an AI shouldn't overrule a deadlocked human vote), then
-// it showed a for/against table (rejected: a pros-and-cons list on a phone
-// card is homework, and nobody wants to adjudicate a spreadsheet). This keeps
-// the decisive shape of the original added/skipped while the squad's votes
-// stay the only thing that can actually move the item.
-function adviceHtml(advice, itemId){
-  if(!advice) return '';
-  const yes = advice.verdict === 'yes';
-  return `
-    <div class="advice-panel ${yes ? 'verdict-yes' : 'verdict-no'}">
-      <div class="advice-verdict">${yes ? '👍' : '👎'} ${escapeHtml(advice.headline || '')}</div>
-      <div class="advice-reason">${escapeHtml(advice.reason || '')}</div>
-      <div class="advice-footer">Still your call -- vote above.</div>
-      <button class="advice-chat-btn" data-discuss-item="${itemId}">💬 Discuss in chat</button>
-    </div>`;
+// ---- The tie popup -------------------------------------------------------
+// Everything about a split vote happens here now, instead of being split
+// across a top banner, the AI note bar, and a cramped grid card all saying
+// versions of the same thing. The card keeps one button; this is what it
+// opens.
+//
+// SIX-PERSON BEHAVIOUR -- the things that only bite once a squad is big:
+//   * Only an exact even split counts as a deadlock (3-3 of 6). Odd squads
+//     can't deadlock at all once everyone's voted -- see computeVoteStatus().
+//   * With 6 people voting, several items can deadlock within seconds of
+//     each other. A popup per tie would be a barrage, so it auto-opens for
+//     at most ONE item, once (tracked in state.autoShownTieIds), and never
+//     for a second tie while it's already open. Every other tie stays
+//     reachable from its own card's Tie-break button, on the user's terms.
+//   * It never auto-opens over the chat drawer or the roulette -- someone
+//     mid-conversation or mid-spin shouldn't get hijacked.
+//   * Advice is shared room state, so if one person taps "Get my read",
+//     everyone with the popup open on that item sees it appear (render()
+//     calls refreshTieModal on every broadcast).
+//   * If the squad resolves the tie while you're reading, the popup says so
+//     rather than silently sitting there with stale options.
+function openTieModal(itemId, opts = {}){
+  if(!itemId || !state.room) return;
+  state.tieModalItemId = itemId;
+  // If advice already exists, go straight to it -- re-tapping Tie-break
+  // after someone's already asked should show the read, not ask again.
+  const hasAdvice = !!(state.room.tie_advice || {})[itemId];
+  state.tieModalView = opts.view || (hasAdvice ? 'advice' : 'choose');
+  renderTieModal();
 }
 
-// The two buttons a contested card offers when no advice has been asked for
-// yet. Chat comes FIRST and is styled as the primary option: user feedback
-// was blunt that having chat forced open on a tie felt like a slap, but that
-// discussion is still what they actually want -- so it's offered, prominently,
-// rather than imposed.
-function contestedActionsHtml(itemId){
-  return `
-    <div class="contested-actions">
-      <button class="discuss-btn" data-discuss-item="${itemId}">💬 Discuss in chat</button>
-      <button class="get-read-btn" data-advice-item="${itemId}">✦ Get my read</button>
-    </div>`;
+function closeTieModal(){
+  state.tieModalItemId = null;
+  state.tieModalView = 'choose';
+  const overlay = $('#tie-modal');
+  if(overlay) overlay.classList.remove('show');
 }
+
+// Called both on open and from render(), so an open popup stays truthful as
+// votes and advice arrive from the rest of the squad.
+function refreshTieModal(){
+  if(state.tieModalItemId) renderTieModal();
+}
+
+function renderTieModal(){
+  const overlay = $('#tie-modal');
+  const body = $('#tie-modal-body');
+  if(!overlay || !body) return;
+  const itemId = state.tieModalItemId;
+  if(!itemId || !state.room){ overlay.classList.remove('show'); return; }
+
+  const item = state.catalog.find(i => i.id === itemId);
+  const itemName = item ? item.name : 'this item';
+  const votes = state.room.reactions[itemId] || {};
+  const likes = Object.values(votes).filter(v => v === 'like').length;
+  const passes = Object.values(votes).filter(v => v === 'pass').length;
+  const participantCount = participantCountOf(state.room);
+  const notVoted = Math.max(0, participantCount - likes - passes);
+  const inCart = state.room.cart.includes(itemId);
+  const voteStatus = computeVoteStatus(votes, participantCount);
+  const advice = (state.room.tie_advice || {})[itemId];
+
+  const stillContested = inCart ? passes > 0 : voteStatus === 'deadlocked';
+
+  // Spelling out the actual numbers matters much more at 6 people than at 2:
+  // "3-3" is instantly legible, "the squad is split" is not.
+  const tallyLine = `<div class="tie-modal-tally">${likes} liked · ${passes} passed${notVoted > 0 ? ` · ${notVoted} yet to vote` : ' · everyone’s voted'}</div>`;
+
+  if(!stillContested){
+    body.innerHTML = `
+      <div class="tie-modal-title">✓ Settled</div>
+      <div class="tie-modal-sub">The squad moved on from ${escapeHtml(itemName)} -- ${inCart ? "it's in the cart" : 'no split left to break'}.</div>
+      ${tallyLine}
+      <button type="button" class="tie-modal-primary" data-tie-modal-close="1">Close</button>`;
+    overlay.classList.add('show');
+    return;
+  }
+
+  if(state.tieModalView === 'advice'){
+    if(advice){
+      const yes = advice.verdict === 'yes';
+      body.innerHTML = `
+        <div class="tie-modal-title">✦ My read on ${escapeHtml(itemName)}</div>
+        ${tallyLine}
+        <div class="tie-modal-advice ${yes ? 'verdict-yes' : 'verdict-no'}">
+          <div class="tie-modal-verdict">${yes ? '👍' : '👎'} ${escapeHtml(advice.headline || '')}</div>
+          <div class="tie-modal-reason">${escapeHtml(advice.reason || '')}</div>
+        </div>
+        <div class="tie-modal-footnote">Advice only -- the item moves when someone changes their vote.</div>
+        <button type="button" class="tie-modal-secondary" data-tie-discuss="1">💬 Discuss in chat</button>
+        <button type="button" class="tie-modal-primary" data-tie-modal-close="1">Got it</button>`;
+    } else {
+      body.innerHTML = `
+        <div class="tie-modal-title">✦ Reading the room...</div>
+        <div class="tie-modal-sub">One moment.</div>`;
+    }
+    overlay.classList.add('show');
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="tie-modal-title">Split vote on ${escapeHtml(itemName)}</div>
+    <div class="tie-modal-sub">${inCart
+      ? "It's in the cart on a majority, but not everyone agrees."
+      : "Nothing gets decided for you -- the item only moves when someone changes their vote."}</div>
+    ${tallyLine}
+    <button type="button" class="tie-modal-primary" data-tie-discuss="1">💬 Discuss in chat</button>
+    <button type="button" class="tie-modal-secondary" data-tie-advice="1">✦ Get my read</button>`;
+  overlay.classList.add('show');
+}
+
+$('#tie-modal').addEventListener('click', (e) => {
+  // Tapping the dimmed backdrop closes it, same as every other modal here.
+  if(e.target.id === 'tie-modal' || e.target.closest('[data-tie-modal-close]') || e.target.closest('#tie-modal-close')){
+    closeTieModal();
+    return;
+  }
+  if(e.target.closest('[data-tie-discuss]')){
+    const itemId = state.tieModalItemId;
+    closeTieModal();
+    if(itemId) openChatForItem(itemId);
+    return;
+  }
+  if(e.target.closest('[data-tie-advice]')){
+    state.tieModalView = 'advice';
+    requestAdvice(state.tieModalItemId);
+    renderTieModal();
+  }
+});
 
 function matchesSearch(item, term){
   if(!term) return true;
@@ -901,10 +1080,8 @@ $('#product-search').addEventListener('input', (e) => {
 $('#product-grid').addEventListener('click', (e) => {
   const reactBtn = e.target.closest('.react-btn');
   if(reactBtn){ react(reactBtn.dataset.item, reactBtn.dataset.reaction); return; }
-  const adviceBtn = e.target.closest('[data-advice-item]');
-  if(adviceBtn){ requestAdvice(adviceBtn.dataset.adviceItem); return; }
-  const miniAdvice = e.target.closest('.mini-tie-link');
-  if(miniAdvice){ requestAdvice(miniAdvice.dataset.tieItem); return; }
+  const tieBtn = e.target.closest('[data-tie-open]');
+  if(tieBtn){ openTieModal(tieBtn.dataset.tieOpen); return; }
   const discussBtn = e.target.closest('[data-discuss-item]');
   if(discussBtn){ openChatForItem(discussBtn.dataset.discussItem); return; }
 });
@@ -1173,7 +1350,14 @@ function render(){
     ? `${countLabel} · room for ${spotsLeft} more`
     : `${countLabel} · squad's full`;
 
-  $('#ai-note').textContent = state.aiNote || '';
+  // Shown only when there's something actionable to say. An always-present
+  // bar restating the occasion (already in the header above it) trained
+  // people to ignore it, which meant the notes that DO matter -- a split
+  // vote, a budget overrun -- got ignored too.
+  const aiBar = $('#ai-bar');
+  const note = state.aiNote || '';
+  $('#ai-note').textContent = note;
+  if(aiBar) aiBar.style.display = note ? 'flex' : 'none';
 
   const filtered = state.catalog.filter(item => matchesSearch(item, state.searchTerm));
   renderGrid(filtered, room);
@@ -1201,6 +1385,7 @@ function render(){
   detectConsensusCelebrations(room);
   renderChat(room);
   refreshRouletteSlots();
+  refreshTieModal();
 }
 
 function getTiedIds(room){
@@ -1291,70 +1476,34 @@ $('#return-to-checkout').addEventListener('click', () => {
 // banner appears at the top of the room, chat is offered as a clearly-labelled
 // button (on the banner AND on the card itself), and the chat button gets its
 // unread dot so it's visibly the place to go. The squad chooses to open it.
+// Fires when a brand-new tie appears. Opens the popup, but only under
+// conditions that keep it from becoming a nuisance in a 6-person squad --
+// see the big comment on openTieModal() for the full reasoning.
 function announceTie(itemId){
   state.pendingTieItemId = itemId;
-  if(state.dismissedTieNudges.has(itemId)) return;
 
-  const item = state.catalog.find(i => i.id === itemId);
-  const itemName = item ? item.name : 'an item';
-  const banner = $('#tie-nudge-banner');
-  if(!banner) return;
-  banner.dataset.tieItem = itemId;
-  banner.innerHTML = `
-    <div class="tie-nudge-text">
-      <span class="tie-nudge-title">⚖️ Squad's split on ${escapeHtml(itemName)}</span>
-      <span class="tie-nudge-sub">Talk it out, or get my read -- either way, the call's yours. <button type="button" class="tie-nudge-how" data-tie-how="1">How do ties work?</button></span>
-    </div>
-    <div class="tie-nudge-actions">
-      <button type="button" class="tie-nudge-chat-btn" data-discuss-item="${itemId}">💬 Discuss</button>
-      <button type="button" class="tie-nudge-jump-btn" data-tie-jump="${itemId}">See item</button>
-    </div>
-    <button type="button" class="tie-nudge-close" data-tie-dismiss="${itemId}" aria-label="Dismiss">✕</button>`;
-  banner.classList.add('show');
+  // Already popped for this item once -- don't nag again. The card's
+  // Tie-break button is always there if they want it back.
+  if(state.autoShownTieIds.has(itemId)) return;
+  // Something else already has the screen. Auto-opening on top of a
+  // conversation or a spin is exactly the hijacking this replaced.
+  if(state.chatOpen) return;
+  if($('#roulette-modal').classList.contains('show')) return;
+  // A popup is already up for a different tie (very possible at 6 people --
+  // two items can deadlock seconds apart). One at a time; the rest wait on
+  // their cards.
+  if(state.tieModalItemId) return;
 
-  // A quiet signal that chat is where this gets resolved, without taking
-  // over the screen -- same dot the app already uses for unread messages.
-  $all('.unread-dot').forEach(d => d.classList.add('show'));
+  state.autoShownTieIds.add(itemId);
+  openTieModal(itemId, { view: 'choose' });
 }
-
-$('#tie-nudge-banner').addEventListener('click', (e) => {
-  // The explainer is opt-in now. It used to auto-show as a full modal on the
-  // first tie of a session, on top of the force-opened chat -- two
-  // interruptions stacked on one disagreement.
-  if(e.target.closest('[data-tie-how]')){
-    $('#tie-explainer').classList.add('show');
-    state.tieExplainerShown = true;
-    return;
-  }
-  const dismissId = e.target.closest('[data-tie-dismiss]')?.dataset.tieDismiss;
-  if(dismissId){
-    // Remembered per item, so a dismissed nudge doesn't pop straight back on
-    // the next state broadcast (which arrives on literally every vote).
-    state.dismissedTieNudges.add(dismissId);
-    $('#tie-nudge-banner').classList.remove('show');
-    return;
-  }
-  const discussId = e.target.closest('[data-discuss-item]')?.dataset.discussItem;
-  if(discussId){
-    state.dismissedTieNudges.add(discussId);
-    $('#tie-nudge-banner').classList.remove('show');
-    openChatForItem(discussId);
-    return;
-  }
-  const jumpId = e.target.closest('[data-tie-jump]')?.dataset.tieJump;
-  if(jumpId){
-    state.dismissedTieNudges.add(jumpId);
-    $('#tie-nudge-banner').classList.remove('show');
-    jumpToItemCard(jumpId);
-  }
-});
 
 // Opens chat WITH context about which item is being discussed -- always
 // user-initiated (a tapped button), never automatic.
 function openChatForItem(itemId){
   const item = state.catalog.find(i => i.id === itemId);
   const note = $('#chat-context-note');
-  note.innerHTML = `⚖️ Talking through "${escapeHtml(item ? item.name : 'an item')}" -- whatever you land on, change your votes on the card to make it stick. <button type="button" id="chat-jump-to-tie" class="chat-jump-btn">Jump to item</button>`;
+  note.innerHTML = `Talking through "${escapeHtml(item ? item.name : 'an item')}" -- whatever you land on, change your votes on the card to make it stick. <button type="button" id="chat-jump-to-tie" class="chat-jump-btn">Jump to item</button>`;
   note.style.display = 'block';
   note.dataset.tieItem = itemId;
   openChatDrawer();
@@ -2112,10 +2261,6 @@ chatAudioBtn.addEventListener('click', async () => {
   }
 });
 
-$('#tie-explainer-close').addEventListener('click', () => {
-  $('#tie-explainer').classList.remove('show');
-});
-
 $('#demo-tools-toggle').addEventListener('click', () => {
   const panel = $('#demo-tools-panel');
   panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
@@ -2209,13 +2354,18 @@ $('#roulette-done-btn').addEventListener('click', closeRouletteModal);
 $('#roulette-reel').addEventListener('click', (e) => {
   const reactBtn = e.target.closest('.roulette-slot-btn');
   if(reactBtn){ react(reactBtn.dataset.item, reactBtn.dataset.reaction); return; }
-  const adviceBtn = e.target.closest('[data-advice-item]');
-  if(adviceBtn){ requestAdvice(adviceBtn.dataset.adviceItem); return; }
-  const discussBtn = e.target.closest('[data-discuss-item]');
-  if(discussBtn){
-    // Close the roulette first -- opening chat on top of it would stack two
+  const tieBtn = e.target.closest('[data-tie-open]');
+  if(tieBtn){
+    // Close the roulette first -- the tie popup on top of it would stack two
     // overlays. Reopening afterwards is deliberately NOT automatic; the
     // roulette button is right there if they want another spin.
+    const itemId = tieBtn.dataset.tieOpen;
+    closeRouletteModal();
+    openTieModal(itemId);
+    return;
+  }
+  const discussBtn = e.target.closest('[data-discuss-item]');
+  if(discussBtn){
     closeRouletteModal();
     openChatForItem(discussBtn.dataset.discussItem);
     return;

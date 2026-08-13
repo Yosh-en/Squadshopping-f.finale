@@ -6,7 +6,7 @@
 <title>Shop Together -- Myntra Hackathon MVP</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=86">
+<link rel="stylesheet" href="/static/style.css?v=90">
 </head>
 <body>
 
@@ -293,12 +293,6 @@
     <div id="screen-room" class="screen">
       <div id="catchup-banner" class="catchup-banner"></div>
 
-      <!-- Inline, dismissible nudge shown when the squad deadlocks. Replaces
-           the old behaviour of force-opening the chat drawer (plus a modal on
-           first tie), which user feedback described as feeling like a slap in
-           the face. Chat is offered here as a button, never opened for you. -->
-      <div id="tie-nudge-banner" class="tie-nudge-banner"></div>
-
       <div id="roulette-modal" class="modal-overlay roulette-overlay">
         <div class="modal-card roulette-modal-card">
           <button id="roulette-close-btn" class="roulette-close-btn" type="button" aria-label="Close">✕</button>
@@ -309,11 +303,14 @@
         </div>
       </div>
 
-      <div id="tie-explainer" class="modal-overlay">
-        <div class="modal-card">
-          <div class="modal-title">⚖️ What happens on a split vote?</div>
-          <p class="modal-body">When everyone's voted and it's an exact 50/50, nothing gets decided for you. You can talk it out in squad chat, or tap "Get my read" for the case each way -- the squad's own votes, season fit, rating, discount and budget impact, laid out plainly.<br><br>Either way the item only moves when someone actually changes their vote. The AI advises; you decide.</p>
-          <button id="tie-explainer-close" class="cta" type="button">Got it</button>
+      <!-- The one place a split vote is handled. Auto-opens on a fresh tie
+           (guarded -- see announceTie in app.js), and reopens from any
+           contested card's Tie-break button. Both the discuss/advice choice
+           and the AI's read render into #tie-modal-body. -->
+      <div id="tie-modal" class="modal-overlay">
+        <div class="modal-card tie-modal-card">
+          <button id="tie-modal-close" class="tie-modal-close" type="button" aria-label="Close">✕</button>
+          <div id="tie-modal-body"></div>
         </div>
       </div>
 
@@ -337,9 +334,12 @@
           <div id="member-avatars"></div>
           <span id="member-count"></span>
         </div>
+        <!-- Lives INSIDE the white top block on purpose. Floating between
+             two white sections meant the grey canvas showed through around
+             it, which read as a stray grey box rather than part of the app.
+             Hidden entirely (by render()) whenever the note is empty. -->
+        <div class="ai-bar" id="ai-bar" style="display:none;"><span class="ai-dot">✦</span><span id="ai-note"></span></div>
       </div>
-
-      <div class="ai-bar"><span class="ai-dot">✦</span><span id="ai-note">Waiting for the squad...</span></div>
 
       <div class="search-row">
         <div class="search-pill">
@@ -435,6 +435,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=86"></script>
+<script src="/static/app.js?v=90"></script>
 </body>
 </html>

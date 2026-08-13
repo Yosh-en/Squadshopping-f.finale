@@ -831,6 +831,76 @@ input:focus {
   min-height: 14px;
 }
 
+/* Only ever appears on an actual name collision -- see main.py's /api/login.
+   Rendered as its own bordered panel, not loose text plus buttons jammed
+   against the LOGIN button below: that earlier version put three full-width
+   buttons in a row with no separation, and the middle one (LOGIN) would only
+   have re-asked the same question. While this is showing, .collision-pending
+   hides LOGIN and these two answers act as the submit. */
+.login-collision {
+  color: var(--ink);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  min-height: 0;
+}
+
+.login-collision-q {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+
+.login-collision-q b {
+  font-weight: 700;
+}
+
+.login-collision-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.login-collision-yes,
+.login-collision-no {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  padding: 10px 6px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 11.5px;
+  line-height: 1.25;
+  cursor: pointer;
+  font-family: 'Inter';
+}
+
+.login-collision-yes {
+  background: var(--pink);
+  color: #fff;
+}
+
+.login-collision-yes:active {
+  background: var(--pink-dark);
+}
+
+.login-collision-no {
+  background: #fff;
+  color: var(--ink);
+  border: 1.5px solid var(--border);
+}
+
+.login-collision-no:active {
+  background: var(--border);
+}
+
+#onboarding-login-form.collision-pending .login-cta {
+  display: none;
+}
+
 .hint {
   font-size: 11px;
   color: var(--muted);
@@ -1035,19 +1105,24 @@ input:focus {
   margin-left: 10px;
 }
 
+/* Light, tinted, bordered -- consistent with every other surface in the app.
+   This used to be a near-black slab (#2A2D45), which in a white Myntra-style
+   shell read as a foreign panel dropped on top of the screen rather than part
+   of it. The pink accent dot carries the "this is the AI coordinator"
+   identity without needing a dark background to do it. */
 .ai-bar {
-  margin: 8px 16px 0;
-  background: linear-gradient(135deg, #2A2D45, #1c1e30);
-  color: #fff;
-  border-radius: 12px;
+  margin: 9px 0 2px;
+  background: #FFF4F7;
+  border: 1px solid #FFDCE5;
+  color: var(--ink);
+  border-radius: 10px;
   padding: 8px 10px;
   font-size: 11.5px;
-  line-height: 1.35;
+  line-height: 1.4;
   display: flex;
-  gap: 7px;
+  gap: 8px;
   align-items: flex-start;
   flex: 0 0 auto;
-  box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.4);
 }
 
 .ai-bar .ai-dot {
@@ -1064,7 +1139,8 @@ input:focus {
 }
 
 #ai-note {
-  font-weight: 500;
+  font-weight: 600;
+  color: #7A2340;
 }
 
 .event-toast {
@@ -1076,17 +1152,20 @@ input:focus {
   color: #fff;
   font-size: 12px;
   font-weight: 600;
-  padding: 9px 16px;
-  border-radius: 20px;
+  padding: 10px 16px;
+  border-radius: 16px;
   box-shadow: 0 8px 20px -6px rgba(0, 0, 0, 0.4);
   z-index: 40;
   opacity: 0;
   pointer-events: none;
   transition: opacity .25s, transform .25s;
-  white-space: nowrap;
-  max-width: 85%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wraps rather than truncating. With nowrap + ellipsis, a longer product
+     name pushed the trailing "-- tap to view" past the cutoff, so the one
+     part telling you it was interactive was the first thing to disappear. */
+  white-space: normal;
+  line-height: 1.4;
+  text-align: center;
+  max-width: 82%;
 }
 
 .event-toast.show {
@@ -1223,7 +1302,7 @@ input:focus {
 }
 
 /* A real overlay now, matching every other modal in the app (login,
-   roulette, reminder, tie-explainer) -- closed means completely gone
+   roulette, reminder, tie popup) -- closed means completely gone
    (opacity 0, pointer-events none), open means it takes over with a
    dimmed backdrop. Replaces the old partial bottom drawer, which had a
    real problem: depending on where the underlying screen happened to be
@@ -2136,18 +2215,6 @@ input:focus {
   color: #B8F5CE;
 }
 
-.roulette-slot-tie-btn {
-  margin-top: 4px;
-  border: none;
-  background: #F5A623;
-  color: #fff;
-  font-weight: 700;
-  font-size: 8.5px;
-  padding: 4px 6px;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
 .roulette-slot.landed::after {
   content: '';
   position: absolute;
@@ -2296,6 +2363,10 @@ input:focus {
   contain-intrinsic-size: auto 300px;
 }
 
+/* Deliberately NOT full-width. An earlier attempt made split-vote cards span
+   the whole grid row to fit advice text inside them; it made one product
+   dominate the shelf and looked far worse. The card stays the same size as
+   every other card -- everything that needs room lives in the tie popup. */
 .card.tied {
   border-color: #F5A623;
 }
@@ -2541,12 +2612,12 @@ input:focus {
 }
 
 .cart-objection-note {
-  padding: 4px 9px 7px;
-  font-size: 10px;
+  padding: 5px 10px 8px;
+  font-size: 11.5px;
   color: #9A5B00;
   text-align: center;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .roulette-slot-status.objected {
@@ -2567,18 +2638,6 @@ input:focus {
   border-top: 1px solid var(--border);
 }
 
-.mini-tie-link {
-  display: inline-block;
-  margin-left: 4px;
-  border: none;
-  background: none;
-  color: var(--pink-dark);
-  font-weight: 700;
-  font-size: 10.5px;
-  text-decoration: underline;
-  cursor: pointer;
-  padding: 0;
-}
 
 .react-btn {
   width: 29px;
@@ -3168,256 +3227,179 @@ input:focus {
 .recipient-name-label{ margin-top:12px !important; }
 .reminder-archive-link{ color:#B5453E; font-size:11px; text-decoration:underline; margin-top:4px; }
 
-/* ---------- Split-vote nudge + AI advice (advisory, not deciding) -------- */
-/* Inline banner instead of a force-opened chat drawer. Amber (the app's
-   existing "needs attention" colour) rather than red -- a split vote is a
-   normal part of shopping together, not an error state. */
-.tie-nudge-banner {
-  display: none;
+/* ---------- Split-vote popup (advisory, never deciding) ---------------- */
+/* A plain white modal, exactly like the app's other modals (login, roulette,
+   reminder). The previous amber-gradient banner was the wrong instinct: a
+   split vote isn't a warning state, and painting it warning-yellow made it
+   look like an error had occurred AND made it read as a foreign strip pasted
+   over the app rather than part of it. */
+.tie-modal-card {
   position: relative;
-  margin: 10px 16px 0;
-  background: linear-gradient(120deg, #FFF3E0, #FFE7C4);
-  border: 1px solid #FFD9A0;
-  border-radius: 12px;
-  padding: 11px 34px 11px 13px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-shrink: 0;
+  max-width: 300px;
+  padding: 22px 20px 20px;
 }
 
-.tie-nudge-banner.show {
-  display: flex;
-}
-
-.tie-nudge-text {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.tie-nudge-title {
-  font-size: 12px;
-  font-weight: 800;
-  color: #7A4700;
-  line-height: 1.3;
-}
-
-.tie-nudge-sub {
-  font-size: 10.5px;
-  color: #9A5B00;
-  line-height: 1.4;
-}
-
-.tie-nudge-how {
-  border: none;
-  background: none;
-  padding: 0;
-  font-size: 10px;
-  font-weight: 700;
-  color: #7A4700;
-  text-decoration: underline;
-  cursor: pointer;
-  font-family: 'Inter';
-}
-
-.tie-nudge-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  flex-shrink: 0;
-}
-
-/* Chat is the primary action -- filled, not outlined -- because discussion is
-   what the squad actually wanted; it just shouldn't be forced on them. */
-.tie-nudge-chat-btn {
-  border: none;
-  background: #9A5B00;
-  color: #fff;
-  font-weight: 700;
-  font-size: 10.5px;
-  padding: 6px 11px;
-  border-radius: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.tie-nudge-chat-btn:active {
-  background: #7A4700;
-}
-
-.tie-nudge-jump-btn {
-  border: 1.5px solid #E0B878;
-  background: rgba(255, 255, 255, 0.7);
-  color: #7A4700;
-  font-weight: 700;
-  font-size: 10.5px;
-  padding: 5px 11px;
-  border-radius: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.tie-nudge-close {
+.tie-modal-close {
   position: absolute;
-  top: 7px;
-  right: 8px;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
   border: none;
   background: none;
-  color: #9A5B00;
-  opacity: 0.65;
-  font-size: 12px;
+  color: var(--muted);
+  font-size: 14px;
   cursor: pointer;
-  padding: 2px;
+  padding: 0;
   line-height: 1;
 }
 
-/* The two options on a contested card. Stacked, full width, chat first. */
-.contested-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 7px 8px 8px;
-  border-top: 1px solid var(--border);
+.tie-modal-title {
+  font-weight: 800;
+  font-size: 15.5px;
+  color: var(--ink);
+  line-height: 1.3;
+  margin: 0 22px 6px 0;
 }
 
-.discuss-btn {
-  width: 100%;
-  border: none;
-  background: #F5A623;
-  color: #fff;
+.tie-modal-sub {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+/* Spelled-out numbers, because "3-3" is instantly readable at six people
+   and "the squad is split" is not. */
+.tie-modal-tally {
+  font-size: 11.5px;
   font-weight: 700;
+  color: var(--ink);
+  background: var(--canvas);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 14px;
+  text-align: center;
+}
+
+.tie-modal-advice {
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+}
+
+.tie-modal-advice.verdict-yes {
+  border-color: #A8E0C3;
+  background: #F1FBF6;
+}
+
+.tie-modal-advice.verdict-no {
+  border-color: #FFD9A0;
+  background: #FFF9F1;
+}
+
+.tie-modal-verdict {
+  font-size: 13.5px;
+  font-weight: 800;
+  line-height: 1.35;
+  margin-bottom: 5px;
+}
+
+.tie-modal-advice.verdict-yes .tie-modal-verdict {
+  color: #0E6B3F;
+}
+
+.tie-modal-advice.verdict-no .tie-modal-verdict {
+  color: #9A5B00;
+}
+
+.tie-modal-reason {
+  font-size: 12px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.tie-modal-footnote {
   font-size: 10.5px;
-  padding: 7px 0;
-  border-radius: 7px;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-bottom: 12px;
+}
+
+.tie-modal-primary,
+.tie-modal-secondary {
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 13px;
   cursor: pointer;
   font-family: 'Inter';
+  border: none;
 }
 
-.discuss-btn:active {
-  background: #D8901A;
+.tie-modal-primary {
+  background: var(--pink);
+  color: #fff;
 }
 
-.get-read-btn {
+.tie-modal-primary:active {
+  background: var(--pink-dark);
+}
+
+.tie-modal-secondary {
+  background: #fff;
+  color: var(--ink);
+  border: 1.5px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.tie-modal-secondary:active {
+  background: var(--canvas);
+}
+
+/* The card's single entry point into the popup. Sized to fit comfortably in
+   a normal half-width grid card -- that's the whole point. */
+.tie-break-row {
+  padding: 0 9px 9px;
+}
+
+.tie-break-btn {
   width: 100%;
   border: 1.5px solid #2A2D45;
   background: #fff;
   color: #2A2D45;
   font-weight: 700;
-  font-size: 10.5px;
-  padding: 6px 0;
-  border-radius: 7px;
+  font-size: 11.5px;
+  padding: 8px 0;
+  border-radius: 8px;
   cursor: pointer;
   font-family: 'Inter';
 }
 
-.get-read-btn:active {
+.tie-break-btn:active {
   background: var(--canvas);
 }
 
-/* The AI's read: one verdict, one reason. Dark like the AI note bar so it's
-   visibly the coordinator speaking. A green tint on "keep it" would make it
-   look like the item had been added -- it hasn't, and only votes can do that --
-   so the accent is kept to the verdict text itself. */
-.advice-panel {
-  border-top: 1px solid var(--border);
-  background: linear-gradient(135deg, #2A2D45, #1c1e30);
-  color: #fff;
-  padding: 9px 9px 8px;
-}
-
-.advice-verdict {
-  font-size: 11.5px;
-  font-weight: 800;
-  line-height: 1.3;
-  margin-bottom: 3px;
-}
-
-.advice-panel.verdict-yes .advice-verdict {
-  color: #B8F5CE;
-}
-
-.advice-panel.verdict-no .advice-verdict {
-  color: #FFC9A8;
-}
-
-.advice-reason {
-  font-size: 10px;
-  line-height: 1.4;
-  color: rgba(255, 255, 255, 0.85);
-  margin-bottom: 6px;
-}
-
-.advice-footer {
-  font-size: 9px;
-  font-style: italic;
-  color: rgba(255, 255, 255, 0.55);
-  margin: 0 0 6px;
-  line-height: 1.3;
-}
-
-.advice-chat-btn {
+/* Roulette slot equivalent -- same button, scaled for a ~110px slot. */
+.roulette-slot-tie-btn {
   width: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  font-weight: 700;
-  font-size: 10px;
-  padding: 6px 0;
-  border-radius: 7px;
-  cursor: pointer;
-  font-family: 'Inter';
-}
-
-.advice-chat-btn:active {
-  background: rgba(255, 255, 255, 0.24);
-}
-
-/* Compact roulette-slot equivalents -- a slot is ~110px wide, so no lists. */
-.roulette-slot-contested-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
   margin-top: 4px;
-}
-
-.roulette-slot-discuss-btn {
-  border: none;
-  background: #F5A623;
-  color: #fff;
-  font-weight: 700;
-  font-size: 8px;
-  padding: 4px 3px;
-  border-radius: 7px;
-  cursor: pointer;
-  font-family: 'Inter';
-}
-
-.roulette-slot-read-btn {
   border: 1px solid rgba(255, 255, 255, 0.45);
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.14);
   color: #fff;
   font-weight: 700;
-  font-size: 8px;
-  padding: 4px 3px;
+  font-size: 8.5px;
+  padding: 5px 3px;
   border-radius: 7px;
   cursor: pointer;
   font-family: 'Inter';
 }
 
-.roulette-slot-advice {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 4px;
-  font-size: 8px;
-  font-weight: 800;
-  line-height: 1.3;
-}
 
-.roulette-slot-advice.verdict-yes { color: #B8F5CE; }
-.roulette-slot-advice.verdict-no { color: #FFC9A8; }
+
 
 /* ---------- Recommendation card: one card, not two banners -------------- */
 /* "Who else is looking at this" now lives inside the recommendation card

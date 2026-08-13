@@ -105,7 +105,7 @@ def save_finished_squads():
 
 finished_squads: list = load_finished_squads()
 
-# ---- persistent accounts (email -> {name, taste_profile}) --------------
+# ---- persistent accounts (user_id -> {name, taste_profile}) ------------
 # This is the one piece of state that survives a "Switch account" or a
 # browser restart -- everything else in this app is scoped to a room or a
 # tab. No passwords are stored here (or anywhere) -- see /api/login below
@@ -134,6 +134,12 @@ users: Dict[str, dict] = load_users()
 
 class LoginRequest(BaseModel):
     name: str
+    # Set by the frontend ONLY after the person has already been asked
+    # "there's already a X -- is that you?" and answered. Absent (False) on
+    # every normal first attempt. See the collision handling below for why
+    # this two-step exists instead of matching by name outright.
+    confirm_existing: bool = False
+    confirm_new: bool = False
 
 class SignupRequest(BaseModel):
     email: str
@@ -147,26 +153,45 @@ def login(req: LoginRequest):
     if not name:
         return {"ok": False, "error": "missing_name"}
 
-    # Look for an existing user by name.
+    # Look for an existing user by name -- but DON'T act on a match yet.
+    # Matching-by-name is genuinely needed (it's what makes "Switch account"
+    # on a shared device return you to your own saved taste profile instead
+    # of a blank one), so it can't just be removed. The bug was auto-logging
+    # into whatever account matched: two different physical people who
+    # happen to type the same name (two "Yoshi"s, two people both typing a
+    # generic test name at a demo) would silently merge into one account,
+    # each seeing the other's taste profile and gift reminders. Neither of
+    # those people asked for that, and neither would notice until something
+    # looked wrong.
+    match = None
     for user_id, record in users.items():
-        existing_name = record.get("name", "").strip()
+        if record.get("name", "").strip().lower() == name.lower():
+            match = (user_id, record.get("name", "").strip())
+            break
 
-        if existing_name.lower() == name.lower():
-            return {
-                "ok": True,
-                "user_id": user_id,
-                "name": existing_name
-            }
+    if match and not req.confirm_new:
+        user_id, existing_name = match
+        if req.confirm_existing:
+            # The person already said "yes, that's me" on a prior submit --
+            # NOW it's safe to log them into the existing account.
+            return {"ok": True, "user_id": user_id, "name": existing_name}
+        # First time we've seen this name collide -- don't decide for them.
+        # Ask once. Costs nothing on the common case (a unique name never
+        # reaches this branch at all).
+        return {"ok": False, "error": "name_taken", "existing_name": existing_name}
 
-    # New user — create a simple internal ID.
+    # No collision, OR the person explicitly said "that's not me" -- create
+    # a fresh, separate account. Deliberately still stored under the SAME
+    # display name if confirm_new was set: two different people are allowed
+    # to share a first name; giving one of them a silently-different label
+    # would be more confusing than two accounts that happen to look the same.
     user_id = f"user_{uuid.uuid4().hex[:12]}"
 
     users[user_id] = {
         "name": name,
         "taste_profile": {}
     }
-
-    save_users(users)
+    save_users()
 
     return {
         "ok": True,
@@ -450,11 +475,13 @@ def create_demo_room():
 
 def persistent_profiles_for_room(room: dict) -> Dict[str, dict]:
     """client_id -> that person's persistent taste_profile from users.json,
-    via the email they logged in with (room["participant_emails"], set on
-    websocket connect). Anyone without a stored email (shouldn't normally
-    happen, but the emails query param is optional) just gets an empty
-    profile -- score_feed() already treats that as "no persistent signal yet",
-    not an error."""
+    via the identifier they logged in with (room["participant_emails"], set
+    on websocket connect -- named "emails" from the earlier email-based login,
+    now actually holding the name-login's user_id, but the lookup below still
+    works correctly since it's just a key into `users`). Anyone without a
+    stored identifier (shouldn't normally happen, but the query param is
+    optional) just gets an empty profile -- score_feed() already treats that
+    as "no persistent signal yet", not an error."""
     emails = room.get("participant_emails", {})
     return {
         cid: users.get(email, {}).get("taste_profile", {})
@@ -622,16 +649,34 @@ manager = ConnectionManager()
 async def broadcast_state(room_id: str, event: dict | None = None):
     room = rooms[room_id]
     attach_gift_split_resolution(room)
-    ai_note = get_ai_suggestion(room, CATALOG)
     # Recomputed on every broadcast -- it's a plain scoring pass over the
     # catalog (no GPU, sub-millisecond), so re-running it on every vote is
     # cheap. This is exactly the "ranking stays with cheap, fast models"
     # answer given to the judges, made real: nothing here waits on an LLM.
     feed_scores = score_feed(room, CATALOG, persistent_profiles=persistent_profiles_for_room(room))
-    payload = {"type": "state", "room": room, "ai_note": ai_note, "feed_scores": feed_scores}
-    if event:
-        payload["event"] = event
-    await manager.broadcast(room_id, payload)
+
+    # The AI note is PER VIEWER, everything else is shared. Some notes are
+    # about a specific person ("2 items still need your call"), and a single
+    # broadcast string can only phrase those in the third person -- which
+    # meant the one person who could act on it was the only one not being
+    # addressed. get_ai_suggestion() is a cheap pass over existing room
+    # state, so running it once per connected socket (max 6) costs nothing
+    # measurable; the genuinely expensive part, score_feed, still runs once
+    # above and is shared by everyone.
+    sockets = list(manager.active.get(room_id, {}).items())
+    for client_id, ws in sockets:
+        payload = {
+            "type": "state",
+            "room": room,
+            "ai_note": get_ai_suggestion(room, CATALOG, viewer_client_id=client_id),
+            "feed_scores": feed_scores,
+        }
+        if event:
+            payload["event"] = event
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            pass
     save_rooms()
 
 

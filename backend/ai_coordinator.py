@@ -447,7 +447,24 @@ def vote_status(votes: dict, participant_count: int) -> str:
     return "unvoted"
 
 
-def get_ai_suggestion(room: dict, catalog: list) -> str:
+def get_ai_suggestion(room: dict, catalog: list, viewer_client_id: str | None = None) -> str:
+    """Returns the coordinator's one-line note for a SPECIFIC viewer.
+
+    viewer_client_id matters because several of these notes are about a
+    person, and a single shared string can only ever talk about people in the
+    third person. That produced a real bug: the "hasn't voted in a bit" nudge
+    was computed once and broadcast to everyone, so Aishnaa's own screen told
+    her "Aishnaa hasn't voted" -- informing her of something she already knew
+    while nobody's screen actually told THEM to act. Notes about the viewer
+    are now addressed to them directly, and the viewer is checked first, so
+    your own screen nags you before it points at anyone else.
+
+    Returns "" when there's genuinely nothing worth saying. The bar hides
+    itself on an empty string rather than filling space with an observation
+    the person can already read off the screen -- the occasion is in the
+    header, the squad size is in the members row, so restating either is
+    noise competing with the shelf for attention.
+    """
     reactions = room.get("reactions", {})
     members = room.get("members", {})
     occasion = room.get("occasion") or "your plan"
@@ -455,28 +472,26 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
     season = season_hint(room.get("when", ""))
 
     if not members:
-        return "Waiting for the squad to join..."
+        return ""
 
     itinerary = room.get("itinerary") or []
 
     if not reactions:
+        # Nothing's been voted on yet, so there is no squad signal to report.
+        # The one thing here that ISN'T already visible on screen is why the
+        # shelf is ordered the way it is -- worth a line only when the
+        # ordering is actually non-obvious (a multi-day itinerary split, or a
+        # season skew). Otherwise: silence.
         if itinerary:
             plan_str = ", ".join(itinerary)
-            base = f"Shelf's split into {plan_str} -- each section leads with what's actually relevant to that day."
+            base = f"Shelf's split into {plan_str} -- each section leads with what's relevant to that day."
             if season:
-                base += f" {season['label'].capitalize()}-friendly picks are bumped up within each section too."
+                base += f" {season['label'].capitalize()}-friendly picks are bumped up within each section."
             return base
-        if occasion == "Just Browsing":
-            # No baseline tags at all for this one, on purpose -- so the
-            # honest thing to say is exactly that, rather than a redundant
-            # echo of the occasion header sitting right above this bar.
-            base = "No occasion set, so I've got no baseline yet -- I'll watch what you two actually gravitate toward as you swipe."
-        else:
-            base = f"Tracking your squad's picks against {occasion} -- swipe a few and I'll flag where you agree."
         if season:
             tag_str = " / ".join(season["tags"])
-            base = f"{occasion} lands in {season['label']} -- keep an eye out for '{tag_str}' pieces. Start swiping and I'll track where the squad actually lands."
-        return base
+            return f"{occasion} lands in {season['label']} -- '{tag_str}' pieces are bumped up."
+        return ""
 
     catalog_by_id = {item["id"]: item for item in catalog}
     # participants (survives a disconnect), not members (live sockets only)
@@ -536,15 +551,10 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
     # observations is why it was getting hard to notice anything new.
     if contested:
         name, item_id = contested[0]
-        # Copy deliberately points at the SQUAD resolving it, with the AI's
-        # read offered as optional input. It never says the AI will decide,
-        # because it won't -- see tie_break_advice() above.
-        if item_id in tie_advice:
-            return f"Still split on {name} -- my read's on the card, but the call's yours. Chat's there if you want to talk it out."
-        TIE_STALL_SECONDS = 30
-        if now - last_vote_ts(item_id=item_id) > TIE_STALL_SECONDS:
-            return f"Still split on {name} -- talk it out in chat, or tap 'Get my read' if a second opinion helps."
-        return f"Squad's split on {name} -- worth a quick chat, or tap 'Get my read' on that card."
+        # Kept to one short line. The popup carries the full explanation and
+        # the AI's read; this bar only needs to still be true after the popup
+        # has been closed, and to point at the way back in.
+        return f"Split on {name} -- tap 'Break the tie' on that card."
 
     # Someone voted against something already in the cart. It stays there
     # (majority rules), but saying so plainly is the whole point -- otherwise
@@ -552,29 +562,40 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
     # reason to believe it registered at all.
     if objected:
         name, item_id, likes_n, passes_n = objected[0]
-        who = "someone" if passes_n == 1 else f"{passes_n} people"
-        if item_id in tie_advice:
-            return f"{name}'s in on a {likes_n}-{passes_n} majority and {who} objected -- my read's on the card, the call's yours."
-        return f"{name}'s in the cart on a {likes_n}-{passes_n} majority, but {who} objected -- worth a chat before you check out."
+        return f"{name}'s in on a {likes_n}-{passes_n} majority -- not everyone agrees."
 
-    # Nobody's stuck on a tie -- but is anyone stuck on *nothing*? If a
-    # member's gone quiet while other items still need their call, name
-    # them specifically rather than letting the squad silently stall on one
-    # distracted person. Deliberately no auto-resolve here -- surfacing it
-    # is enough; deciding for someone without their input would be worse
-    # than the stall itself.
+    # Nobody's stuck on a tie -- but is anyone stuck on *nothing*? Checked
+    # in two passes, viewer first: telling you that YOU are the holdup is
+    # actionable, whereas being told someone else is the holdup is at best
+    # a prompt to go nudge them. Previously only the second pass existed and
+    # its result went to everyone, so the one person who could actually fix
+    # it was the only one not being asked to.
     MEMBER_QUIET_SECONDS = 45
+
+    def pending_for(client_id: str) -> int:
+        count = 0
+        for item_id, votes in reactions.items():
+            if item_id in room.get("cart", []) or item_id in tie_advice:
+                continue
+            if votes and client_id not in votes:
+                count += 1
+        return count
+
+    if viewer_client_id and viewer_client_id in participants:
+        my_pending = pending_for(viewer_client_id)
+        if my_pending:
+            if my_pending == 1:
+                return "1 item still needs your call."
+            return f"{my_pending} items still need your call."
+
     if len(participants) > 1:
         for client_id, member_name in participants.items():
-            pending = 0
-            for item_id, votes in reactions.items():
-                if item_id in room.get("cart", []) or item_id in tie_advice:
-                    continue
-                if votes and client_id not in votes:
-                    pending += 1
+            if client_id == viewer_client_id:
+                continue
+            pending = pending_for(client_id)
             if pending and (now - last_vote_ts(client_id=client_id)) > MEMBER_QUIET_SECONDS:
                 plural = "item" if pending == 1 else "items"
-                return f"{member_name} hasn't voted in a bit -- {pending} {plural} still need their call."
+                return f"{member_name} has gone quiet -- {pending} {plural} waiting on them."
 
     if liked_items:
         total = sum(i["price"] for i in liked_items)
@@ -593,4 +614,4 @@ def get_ai_suggestion(room: dict, catalog: list) -> str:
             return f"The squad's leaning '{top_tag}' ({count} votes), though {season['label']} usually favours {'/'.join(season['tags'])}."
         return f"The squad's leaning '{top_tag}' ({count} votes so far)."
 
-    return "Keep swiping -- I'll flag it the moment a couple of you land on the same item."
+    return ""
