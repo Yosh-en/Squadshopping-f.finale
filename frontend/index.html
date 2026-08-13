@@ -38,55 +38,36 @@
 
       <div id="onboarding-modal" class="modal-overlay">
         <div class="modal-card login-modal-card">
-
+      
           <!-- LOGIN step -- mirrors the real Myntra login screen: gradient logo,
-               email + password, "Keep me logged in" + "Forgot Password" row,
-               pink Login button, "Don't have an account? Sign up" link.
-               No real password check happens anywhere -- see app.js's login
-               handler for why, and what actually gets checked instead. -->
+                     email + password, "Keep me logged in" + "Forgot Password" row,
+                     pink Login button, "Don't have an account? Sign up" link.
+                     No real password check happens anywhere -- see app.js's login
+                     handler for why, and what actually gets checked instead. -->
           <div id="onboarding-step-login" class="onboarding-step">
-            <div class="login-logo-wrap"><div class="m-logo login-logo-big">M</div></div>
-            <div class="login-title login-title-center">Login to Your Account</div>
-
+            <div class="login-logo-wrap">
+              <div class="m-logo login-logo-big">M</div>
+            </div>
+      
+            <div class="login-title login-title-center">
+              Welcome to Squad Shopping
+            </div>
+      
+            <p class="login-subtitle" style="text-align:center;">
+              Enter your name to get started
+            </p>
+      
             <form id="onboarding-login-form">
               <div class="login-icon-input-row">
-                <span class="login-input-icon">✉</span>
-                <input id="onboarding-email" type="email" placeholder="Enter your Email" required />
+                <span class="login-input-icon">👤</span>
+                <input id="onboarding-name" type="text" placeholder="Enter your name" autocomplete="name" required />
               </div>
-              <div class="login-icon-input-row">
-                <span class="login-input-icon">🔒</span>
-                <input id="onboarding-password" type="password" placeholder="Enter your Password" required />
-              </div>
-
-              <div class="login-options-row">
-                <label class="login-remember-label">
-                  <input id="onboarding-remember" type="checkbox" checked />
-                  Keep me logged in
-                </label>
-                <span class="login-link login-forgot-link">Forgot Password</span>
-              </div>
-
+      
               <div class="field-error" id="onboarding-login-error"></div>
-
+      
               <button class="login-cta" type="submit">LOGIN</button>
             </form>
-
-            <p class="login-signup-row">Don't have an account? <span class="login-link" id="onboarding-goto-signup">Sign up</span></p>
           </div>
-
-          <!-- SIGNUP step -- only reached from "Sign up" above, for an email
-               that /api/login didn't recognize. Collects a name (needed
-               everywhere else in the app) and creates the persistent record. -->
-          <div id="onboarding-step-signup" class="onboarding-step" style="display:none;">
-            <div class="login-title">Create your account</div>
-            <p class="login-subtitle" id="onboarding-signup-email-note"></p>
-            <form id="onboarding-signup-form">
-              <input id="onboarding-signup-name" type="text" placeholder="Full name, e.g. Yoshi" required />
-              <button class="login-cta" type="submit">CREATE ACCOUNT</button>
-            </form>
-            <p class="login-signup-row"><span class="login-link" id="onboarding-back-to-login">← Back to login</span></p>
-          </div>
-
         </div>
       </div>
 

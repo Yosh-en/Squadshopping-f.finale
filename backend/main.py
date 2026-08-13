@@ -3,6 +3,7 @@ import json
 import random
 import string
 import time
+import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict
@@ -132,8 +133,7 @@ users: Dict[str, dict] = load_users()
 
 
 class LoginRequest(BaseModel):
-    email: str
-
+    name: str
 
 class SignupRequest(BaseModel):
     email: str
@@ -142,12 +142,38 @@ class SignupRequest(BaseModel):
 
 @app.post("/api/login")
 def login(req: LoginRequest):
-    email = req.email.strip().lower()
-    record = users.get(email)
-    if not record:
-        return {"known": False}
-    return {"known": True, "name": record.get("name", "")}
+    name = req.name.strip()
 
+    if not name:
+        return {"ok": False, "error": "missing_name"}
+
+    # Look for an existing user by name.
+    for user_id, record in users.items():
+        existing_name = record.get("name", "").strip()
+
+        if existing_name.lower() == name.lower():
+            return {
+                "ok": True,
+                "user_id": user_id,
+                "name": existing_name
+            }
+
+    # New user — create a simple internal ID.
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+
+    users[user_id] = {
+        "name": name,
+        "taste_profile": {}
+    }
+
+    save_users(users)
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "name": name
+    }
+    
 
 @app.post("/api/signup")
 def signup(req: SignupRequest):

@@ -1,14 +1,11 @@
 function getOrCreateClientId(){
   try {
-    let id = sessionStorage.getItem('squadClientId');
-    if(!id){
-      id = Math.random().toString(36).slice(2,10);
-      sessionStorage.setItem('squadClientId', id);
+    if (window.crypto && crypto.randomUUID) {
+      return crypto.randomUUID();
     }
-    return id;
-  } catch(e){
-    return Math.random().toString(36).slice(2,10);
-  }
+  } catch(e) {}
+
+  return Math.random().toString(36).slice(2,10) + Date.now().toString(36);
 }
 
 const state = {
@@ -121,10 +118,15 @@ function getStoredUserEmail(){
   catch(e){ return ''; }
 }
 function setStoredUserEmail(email){
-  try { sessionStorage.setItem('squadUserEmail', email); } catch(e){}
+  try {
+    sessionStorage.setItem('squadUserEmail', email);
+  } catch(e){}
 }
-function clearStoredIdentity(){
-  try { sessionStorage.removeItem('squadUserEmail'); sessionStorage.removeItem('squadUserName'); } catch(e){}
+function clearStoredIdentity() {
+  try { 
+    sessionStorage.removeItem('squadUserEmail'); 
+    sessionStorage.removeItem('squadUserName'); 
+  } catch (e) { }
 }
 
 function applyUserNameToUI(name){
@@ -141,16 +143,10 @@ function applyUserNameToUI(name){
 
 function showOnboardingLoginStep(){
   $('#onboarding-step-login').style.display = 'block';
-  $('#onboarding-step-signup').style.display = 'none';
   $('#onboarding-login-error').textContent = '';
   $('#onboarding-modal').classList.add('show');
 }
-function showOnboardingSignupStep(email){
-  $('#onboarding-step-login').style.display = 'none';
-  $('#onboarding-step-signup').style.display = 'block';
-  $('#onboarding-signup-email-note').textContent = `Creating an account for ${email}`;
-  $('#onboarding-modal').classList.add('show');
-}
+
 function closeOnboarding(){ $('#onboarding-modal').classList.remove('show'); }
 
 (function initUserName(){
@@ -167,62 +163,37 @@ function closeOnboarding(){ $('#onboarding-modal').classList.remove('show'); }
 // login rather than a magic-link gimmick).
 $('#onboarding-login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const email = $('#onboarding-email').value.trim().toLowerCase();
+
+  const name = $('#onboarding-name').value.trim();
   const errorEl = $('#onboarding-login-error');
+
   errorEl.textContent = '';
-  if(!email) return;
+
+  if(!name){
+    errorEl.textContent = 'Please enter your name.';
+    return;
+  }
 
   try {
     const res = await fetch('/api/login', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ email })
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
     });
+
     const data = await res.json();
-    if(data.known){
-      setStoredUserEmail(email);
-      setStoredUserName(data.name);
-      applyUserNameToUI(data.name);
+
+    if (res.ok && data.ok) {
+      setStoredUserEmail(data.user_id);
+      setStoredUserName(data.name || name);
+      applyUserNameToUI(data.name || name);
       closeOnboarding();
-      checkReminders();
     } else {
-      errorEl.textContent = "No account with this email yet -- tap Sign up below.";
+      errorEl.textContent = data.error || 'Could not continue. Please try again.';
     }
-  } catch(err){
-    errorEl.textContent = "Couldn't reach the server -- check it's running and try again.";
-  }
-});
-
-$('#onboarding-goto-signup').addEventListener('click', () => {
-  const email = $('#onboarding-email').value.trim().toLowerCase();
-  if(!email){
-    $('#onboarding-login-error').textContent = "Enter an email above first, then tap Sign up.";
-    return;
-  }
-  showOnboardingSignupStep(email);
-});
-
-$('#onboarding-back-to-login').addEventListener('click', () => {
-  showOnboardingLoginStep();
-});
-
-$('#onboarding-signup-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const email = $('#onboarding-email').value.trim().toLowerCase();
-  const name = $('#onboarding-signup-name').value.trim();
-  if(!email || !name) return;
-
-  const res = await fetch('/api/signup', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ email, name })
-  });
-  const data = await res.json();
-  if(data.ok){
-    setStoredUserEmail(email);
-    setStoredUserName(name);
-    applyUserNameToUI(name);
-    closeOnboarding();
-  } else {
-    showOnboardingLoginStep();
+  } catch (err) {
+    console.error(err);
+    errorEl.textContent = 'Unable to connect. Please try again.';
   }
 });
 
@@ -231,8 +202,7 @@ $('#onboarding-signup-form').addEventListener('submit', async (e) => {
 // login so a different email can sign in on this same tab.
 $('#demo-switch-name-btn').addEventListener('click', () => {
   clearStoredIdentity();
-  $('#onboarding-email').value = '';
-  $('#onboarding-password').value = '';
+  $('#onboarding-name').value = '';
   showOnboardingLoginStep();
 });
 
