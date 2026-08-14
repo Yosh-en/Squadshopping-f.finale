@@ -297,10 +297,6 @@ body {
   background: rgba(255, 255, 255, 0.95);
 }
 
-.home-fab-msg {
-  margin: 8px 16px 0 !important;
-}
-
 .cat-tabs {
   display: flex;
   gap: 18px;
@@ -1940,16 +1936,6 @@ input:focus {
   background: var(--canvas);
 }
 
-.demo-time-travel-msg {
-  margin-top: 8px;
-  font-size: 11px;
-  color: #9A5B00;
-  background: #FFF3E0;
-  border-radius: 8px;
-  padding: 8px 12px;
-  line-height: 1.4;
-}
-
 .search-row {
   padding: 8px 16px 4px;
   flex: 0 0 auto;
@@ -2481,6 +2467,24 @@ input:focus {
   letter-spacing: 0.2px;
 }
 
+/* Explicit marker on a card that matches an active "Hey AI, ..." request --
+   without this, the AI filter only reordered the shelf silently, which read
+   as "the AI didn't do anything" even when it correctly worked. Purple to
+   match .ai-filter-chip, so the badge and the chip visibly belong together. */
+.ai-match-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: linear-gradient(120deg, #9A6FD0, #6A3FA0);
+  color: #fff;
+  font-size: 8.5px;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 8px;
+  z-index: 2;
+  letter-spacing: 0.2px;
+}
+
 .top-pick-badge {
   position: absolute;
   top: 8px;
@@ -2934,6 +2938,23 @@ input:focus {
   font-weight: 800;
   color: var(--ink);
   margin-top: 2px;
+}
+
+/* Who's claimed their own unit of this item, and their size -- lives only
+   here, never on the shopping card. Small and quiet on purpose: this is
+   metadata confirming a decision already made, not a new decision to weigh. */
+.checkout-claim-line {
+  font-size: 10.5px;
+  color: var(--green);
+  font-weight: 600;
+  margin-top: 3px;
+}
+
+.checkout-claim-hint {
+  font-size: 10px;
+  color: var(--muted);
+  font-style: italic;
+  margin-top: 3px;
 }
 
 .assign-chips {

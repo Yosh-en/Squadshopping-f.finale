@@ -720,14 +720,22 @@ def parse_ai_chat_intent(text: str):
     parts = []
     if exclude_colors:
         parts.append("excluding " + ", ".join(exclude_colors))
-    if include_colors:
-        parts.append("more " + ", ".join(include_colors))
+    # A single color + single category reads naturally combined ("more white
+    # shirt") -- left as two separate comma-joined parts it read like a flat
+    # list of unrelated things ("more white, shirt"), which is confusing
+    # rather than descriptive. Multiple of either falls back to the plainer
+    # join below rather than trying to build a grammatically perfect sentence.
+    if len(include_colors) == 1 and len(include_categories) == 1 and not include_tags:
+        parts.append(f"more {include_colors[0]} {include_categories[0].lower()}")
+    else:
+        if include_colors:
+            parts.append("more " + ", ".join(include_colors))
+        if include_categories:
+            parts.append(", ".join(include_categories).lower())
     if unavailable and not exclude_colors and not include_colors:
         parts.append(f"nothing's tagged {', '.join(unavailable)} yet")
     if include_tags:
         parts.append(", ".join(include_tags))
-    if include_categories:
-        parts.append(", ".join(include_categories).lower())
     if price_direction:
         parts.append(price_direction)
     if min_rating:

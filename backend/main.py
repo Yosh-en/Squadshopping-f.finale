@@ -193,6 +193,26 @@ async def _background_maintenance():
             print(f"[maintenance] {e!r}")
 
 
+FINISHED_SQUADS_FILE = BASE_DIR / "finished_squads.json"
+
+# Opt-in demo reset, run on server startup. OFF by default -- an
+# always-on auto-reset is dangerous specifically during a live demo: if
+# uvicorn ever restarts mid-presentation (a crash, --reload firing on an
+# unrelated file save), it would silently wipe the very squad you're
+# mid-demo with, with no warning. Instead this only fires when explicitly
+# requested, e.g.:
+#
+#   RESET_DEMO_ON_START=1 uvicorn main:app
+#
+# Never touches users.json -- logins and taste profiles always survive
+# regardless of this flag, since that data has nothing to do with the
+# stale-squad problem this exists to solve.
+if os.environ.get("RESET_DEMO_ON_START") == "1":
+    for _f in (ROOMS_FILE, FINISHED_SQUADS_FILE):
+        if _f.exists():
+            _f.write_text("{}" if _f is ROOMS_FILE else "[]", encoding="utf-8")
+    print("[startup] RESET_DEMO_ON_START=1 -- cleared rooms_state.json and finished_squads.json")
+
 rooms: Dict[str, dict] = load_rooms()
 completed_sessions_count = 0
 
@@ -215,8 +235,6 @@ RECORDING_TIMEOUT_SECONDS = 35  # slightly above the client's own 30s recording 
 # considered. Stores {room_id: {client_id: (timestamp, item_name)}}.
 considering_status: Dict[str, Dict[str, tuple]] = {}
 CONSIDERING_TIMEOUT_SECONDS = 60  # generous -- this is a deliberate look, not a keystroke; a missed "stop" shouldn't clear it too eagerly
-
-FINISHED_SQUADS_FILE = BASE_DIR / "finished_squads.json"
 
 
 def load_finished_squads() -> list:

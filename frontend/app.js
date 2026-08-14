@@ -33,7 +33,7 @@ function getOrCreateClientId(){
 const state = {
   clientId: getOrCreateClientId(), name: '', roomId: '', catalog: [], room: null, ws: null, aiNote: '', searchTerm: '',
   knownTiedIds: new Set(), chatOpen: false, lastChatCount: 0, hasInitializedTies: false, voiceMessages: [],
-  rouletteItemIds: null, rouletteLanded: false, pendingTieItemId: null, demoFabMsgTimer: null,
+  rouletteItemIds: null, rouletteLanded: false, pendingTieItemId: null,
   knownCartIds: new Set(), hasInitializedCart: false,
   typingDebounceTimer: null, isCurrentlyTypingSignal: false,
   feedScores: {},
@@ -910,14 +910,14 @@ $('#catchup-banner').addEventListener('click', (e) => {
 // unbuilt element with a clear "this demo's about Shop Together" response
 // reads as an intentional scope choice.
 let homeNudgeTimer = null;
-function showHomeNudge(text){
+function showHomeNudge(text, durationMs = 2600){
   const el = $('#event-toast');
   delete el.dataset.jumpItem;
   el.classList.remove('clickable');
   el.textContent = text;
   el.classList.add('show');
   clearTimeout(homeNudgeTimer);
-  homeNudgeTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  homeNudgeTimer = setTimeout(() => el.classList.remove('show'), durationMs);
 }
 
 // Delegated once on #screen-home rather than per-element, so it also covers
@@ -963,7 +963,7 @@ function formatWhen(iso){
   return d.toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
 }
 
-function cardHtml(item, room, isTopPick=false){
+function cardHtml(item, room, isTopPick=false, matchesAi=false){
   const votes = room.reactions[item.id] || {};
   const likeCount = Object.values(votes).filter(v=>v==='like').length;
   const passCount = Object.values(votes).filter(v=>v==='pass').length;
@@ -1050,7 +1050,7 @@ function cardHtml(item, room, isTopPick=false){
   return `
     <div class="card ${inCart ? 'in-cart' : ''} ${isContestedInCart ? 'contested' : ''} ${isTied ? 'tied' : ''} ${needsMyVote ? 'needs-vote' : ''} ${iLikedIt ? 'my-like' : ''}" data-card="${item.id}">
       ${inCart ? '<span class="cart-badge">In squad cart</span>' : ''}
-      ${!inCart && !isTied && !needsMyVote && !iLikedIt && isTopPick ? '<span class="top-pick-badge">✦ Top pick for you</span>' : ''}
+      ${!inCart && !isTied && !needsMyVote && !iLikedIt && matchesAi ? '<span class="ai-match-badge">✦ You asked for this</span>' : (!inCart && !isTied && !needsMyVote && !iLikedIt && isTopPick ? '<span class="top-pick-badge">✦ Top pick for you</span>' : '')}
       ${!inCart && justLaunched ? '<span class="launched-badge">Just Launched</span>' : ''}
       ${isContestedInCart ? '<span class="objection-badge">⚠ Objected</span>' : ''}
       ${isTied ? '<span class="split-badge">Split vote</span>' : ''}
@@ -1298,12 +1298,13 @@ function buildItinerarySections(items, itinerary){
 let cardSignatures = {};
 let lastFilteredKey = null;
 
-function cardSignature(item, room, isTopPick=false){
+function cardSignature(item, room, isTopPick=false, matchesAi=false){
   return JSON.stringify([
     room.reactions[item.id] || {},
     room.cart.includes(item.id),
     !!(room.tie_advice || {})[item.id],
     isTopPick,
+    matchesAi,
   ]);
 }
 
@@ -1329,24 +1330,25 @@ function renderGrid(filtered, room){
   const grid = $('#product-grid');
   const itinerary = room.itinerary || [];
   const topPick = topPickId(filtered, room);
+  const aiFilter = room.ai_chat_filter || null;
 
   let ordered, filteredKey, buildHtml;
 
   if(itinerary.length){
     const { sections, rest } = buildItinerarySections(filtered, itinerary);
     ordered = [...sections.flatMap(s => s.items), ...rest];
-    filteredKey = ordered.map(i => i.id).join(',') + '|itin:' + itinerary.join('>') + '|top:' + topPick;
+    filteredKey = ordered.map(i => i.id).join(',') + '|itin:' + itinerary.join('>') + '|top:' + topPick + '|ai:' + (aiFilter ? aiFilter.summary : '');
     buildHtml = () => {
       let html = '';
       sections.forEach(sec => {
         html += `<div class="occasion-divider">✦ Recs for ${escapeHtml(sec.label)}</div>`;
         html += sec.items.length
-          ? sec.items.map(item => cardHtml(item, room, item.id === topPick)).join('')
+          ? sec.items.map(item => cardHtml(item, room, item.id === topPick, matchesAiFilter(item, aiFilter))).join('')
           : `<div class="empty-note">Nothing tagged for "${escapeHtml(sec.label)}" in this catalog yet.</div>`;
       });
       if(rest.length){
         html += `<div class="occasion-divider muted">More to explore</div>`;
-        html += rest.map(item => cardHtml(item, room, item.id === topPick)).join('');
+        html += rest.map(item => cardHtml(item, room, item.id === topPick, matchesAiFilter(item, aiFilter))).join('');
       }
       return html;
     };
@@ -1358,13 +1360,13 @@ function renderGrid(filtered, room){
     // ("Just Browsing", the default in the dropdown) the recommender's output
     // never reached the screen at all. Always use the sorted lists.
     ordered = [...matching, ...rest];
-    filteredKey = ordered.map(i => i.id).join(',') + (hasSplit ? '|split' : '') + '|top:' + topPick;
+    filteredKey = ordered.map(i => i.id).join(',') + (hasSplit ? '|split' : '') + '|top:' + topPick + '|ai:' + (aiFilter ? aiFilter.summary : '');
     buildHtml = () => {
-      if(!hasSplit) return ordered.map(item => cardHtml(item, room, item.id === topPick)).join('');
+      if(!hasSplit) return ordered.map(item => cardHtml(item, room, item.id === topPick, matchesAiFilter(item, aiFilter))).join('');
       let html = `<div class="occasion-divider">✦ Picked for ${escapeHtml(room.occasion)}</div>`;
-      html += matching.map(item => cardHtml(item, room, item.id === topPick)).join('');
+      html += matching.map(item => cardHtml(item, room, item.id === topPick, matchesAiFilter(item, aiFilter))).join('');
       html += `<div class="occasion-divider muted">More to explore</div>`;
-      html += rest.map(item => cardHtml(item, room, item.id === topPick)).join('');
+      html += rest.map(item => cardHtml(item, room, item.id === topPick, matchesAiFilter(item, aiFilter))).join('');
       return html;
     };
   }
@@ -1379,18 +1381,18 @@ function renderGrid(filtered, room){
   if(filteredKey !== lastFilteredKey || !grid.children.length){
     grid.innerHTML = buildHtml();
     cardSignatures = {};
-    ordered.forEach(item => { cardSignatures[item.id] = cardSignature(item, room, item.id === topPick); });
+    ordered.forEach(item => { cardSignatures[item.id] = cardSignature(item, room, item.id === topPick, matchesAiFilter(item, aiFilter)); });
     lastFilteredKey = filteredKey;
     return;
   }
 
   ordered.forEach(item => {
-    const sig = cardSignature(item, room, item.id === topPick);
+    const sig = cardSignature(item, room, item.id === topPick, matchesAiFilter(item, aiFilter));
     if(cardSignatures[item.id] === sig) return;
     const existing = grid.querySelector(`[data-card="${item.id}"]`);
     if(existing){
       const wrapper = document.createElement('div');
-      wrapper.innerHTML = cardHtml(item, room, item.id === topPick).trim();
+      wrapper.innerHTML = cardHtml(item, room, item.id === topPick, matchesAiFilter(item, aiFilter)).trim();
       existing.replaceWith(wrapper.firstElementChild);
     }
     cardSignatures[item.id] = sig;
@@ -1539,6 +1541,26 @@ function renderAiFilterChip(room){
 $('#ai-filter-chip')?.addEventListener('click', (e) => {
   if(e.target.closest('#ai-filter-clear')) send('clear_ai_filter');
 });
+
+// Whether this specific item is what the active AI filter asked for --
+// used to badge it explicitly on the card. Requires EVERY dimension the
+// person actually specified to match, not just one: "white top" asks for
+// white AND a top, so badging every Shirt regardless of color (or every
+// white item regardless of category) looked unfocused -- half the shelf
+// lighting up doesn't read as a real recommendation, it reads as the AI
+// not really understanding the request. The ranking boost in
+// applyAiChatFilter() stays additive/generous (a partial match still climbs
+// the shelf a bit); only this explicit on-card claim needs to be strict.
+function matchesAiFilter(item, filter){
+  if(!filter) return false;
+  const checks = [];
+  if((filter.include_colors || []).length) checks.push((filter.include_colors || []).includes(item.color));
+  if((filter.include_tags || []).length) checks.push((filter.include_tags || []).includes(item.tag));
+  if((filter.include_categories || []).length) checks.push((filter.include_categories || []).includes(item.category));
+  if(filter.min_rating) checks.push(item.rating >= filter.min_rating);
+  if(!checks.length) return false;
+  return checks.every(Boolean);
+}
 
 function render(){
   if(!state.room || !state.catalog.length) return;
@@ -1897,7 +1919,10 @@ function renderTypingIndicator(typers, recorders=[]) {
   wrap.style.display = 'flex';
 }
 
-function assignItem(itemId, buyerId) { send('assign', { item_id: itemId, buyer_id: buyerId }); }
+// Explicit claim/unclaim rather than "set the one buyer" -- multiple people
+// can each independently claim their own unit of the same item now, so
+// there's no single "the buyer" to toggle between anymore.
+function assignItem(itemId, buyerId, claim) { send('assign', { item_id: itemId, buyer_id: buyerId, claim }); }
 function tagOccasion(itemId, tag) { send('tag_occasion', { item_id: itemId, tag }); }
 function removeItem(itemId) { send('remove_item', { item_id: itemId }); }
 function payShare() { send('pay_share'); }
@@ -1975,15 +2000,23 @@ function renderCheckout(cartItems, room) {
   const allocatedTotal = isGiftSplit ? memberIds.reduce((s, cid) => s + personAmount(cid), 0) : 0;
   const splitIsBalanced = splitMode === 'even' || !!room.gift_split_balanced;
 
-  const buyerIds = isGiftSplit ? memberIds : [...new Set(Object.values(assignments))];
+  // assignments[item.id] is now a LIST of buyers per item -- each person who
+  // claimed a unit, not one single assignee. This is the actual fix for
+  // "everyone logged on to buy the same shirt for friendship day and
+  // couldn't add it again in a different size": each of them can now claim
+  // their own separate unit of the same catalog item.
+  const buyerIds = isGiftSplit ? memberIds : [...new Set(Object.values(assignments).flat())];
   const allPaid = buyerIds.length > 0 && buyerIds.every(id => payments[id]);
 
   itemsEl.innerHTML = cartItems.map(item => {
-    const assignedTo = assignments[item.id];
-    const chips = Object.entries(members).map(([cid, n]) => `
-      <button class="assign-chip ${assignedTo === cid ? 'active' : ''}" data-assign-item="${item.id}" data-assign-buyer="${cid}" style="${assignedTo === cid ? `background:${colorForClientId(cid)};border-color:${colorForClientId(cid)};` : ''}" title="${escapeHtml(n)}">
+    const claimedBy = assignments[item.id] || [];
+    const chips = Object.entries(members).map(([cid, n]) => {
+      const isClaimed = claimedBy.includes(cid);
+      return `
+      <button class="assign-chip ${isClaimed ? 'active' : ''}" data-assign-item="${item.id}" data-assign-buyer="${cid}" style="${isClaimed ? `background:${colorForClientId(cid)};border-color:${colorForClientId(cid)};` : ''}" title="${escapeHtml(n)}">
         ${escapeHtml(avatarLabel(n))}
-      </button>`).join('');
+      </button>`;
+    }).join('');
 
     const tagRow = itinerary.length ? `
       <div class="tag-chip-row">
@@ -1993,12 +2026,24 @@ function renderCheckout(cartItems, room) {
           </button>`).join('')}
       </div>` : '';
 
+    // Size lived here previously, next to each buyer's name -- removed. We
+    // capture no real stock-per-size data (see catalog.json), so a size
+    // label here implied a check that never actually happened. Better to
+    // show nothing than to look like something was verified that wasn't.
+    // In production, size would live where Myntra already puts it: on the
+    // product card itself, checked against live inventory before the item
+    // is added to cart at all -- not bolted onto checkout after the fact.
+    const claimLine = claimedBy.length
+      ? `<div class="checkout-claim-line">${claimedBy.map(cid => escapeHtml(members[cid] || 'Someone')).join(' · ')}</div>`
+      : `<div class="checkout-claim-hint">Tap an avatar to claim your own unit</div>`;
+
     return `
       <div class="checkout-item">
         <div class="checkout-item-media">${mediaHtml(item)}</div>
         <div class="checkout-item-info">
           <div class="checkout-item-name">${escapeHtml(item.brand)} -- ${escapeHtml(item.name)}</div>
           <div class="checkout-item-price">₹${item.price}</div>
+          ${claimLine}
           ${tagRow}
         </div>
         <div class="assign-chips">${chips}</div>
@@ -2010,7 +2055,7 @@ function renderCheckout(cartItems, room) {
   if(itinerary.length){
     const tripProgress = itinerary.map(fn => {
       const itemsForFn = cartItems.filter(i => occasionTags[i.id] === fn);
-      const boughtCount = itemsForFn.filter(i => payments[assignments[i.id]]).length;
+      const boughtCount = itemsForFn.filter(i => (assignments[i.id] || []).some(b => payments[b])).length;
       const done = itemsForFn.length > 0 && boughtCount === itemsForFn.length;
       return `<div class="trip-progress-row ${done ? 'done' : ''}">${escapeHtml(fn)}: ${boughtCount}/${itemsForFn.length} bought${done ? ' ✓' : ''}</div>`;
     }).join('');
@@ -2023,7 +2068,7 @@ function renderCheckout(cartItems, room) {
     progressEl.remove();
   }
 
-  const unassignedCount = cartItems.filter(i => !assignments[i.id]).length;
+  const unassignedCount = cartItems.filter(i => !(assignments[i.id] || []).length).length;
 
   const oldGiftNote = document.getElementById('gift-split-note');
   if (oldGiftNote) oldGiftNote.remove();
@@ -2103,7 +2148,7 @@ function renderCheckout(cartItems, room) {
       myTotal = personAmount(cid);
       hasStake = true;
     } else {
-      const myItems = cartItems.filter(i => assignments[i.id] === cid);
+      const myItems = cartItems.filter(i => (assignments[i.id] || []).includes(cid));
       myTotal = myItems.reduce((s,i) => s + i.price, 0);
       hasStake = myItems.length > 0;
     }
@@ -2503,26 +2548,33 @@ $('#demo-tools-toggle').addEventListener('click', () => {
   panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
 });
 
-function triggerDemoTimeTravel(msgEl){
-  fetch('/api/demo/time-travel', { method: 'POST' })
+function triggerDemoTimeTravel(){
+  fetch('/api/demo/time-travel', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ email: getStoredUserEmail() })
+  })
     .then(r => r.json())
     .then(d => {
-      clearTimeout(state.demoFabMsgTimer);
       if(d.error){
-        msgEl.textContent = '⚠️ No completed gift checkout yet -- finish one (with a recipient set) first, then come back here.';
-        msgEl.style.display = 'block';
-        state.demoFabMsgTimer = setTimeout(() => { msgEl.style.display = 'none'; }, 4500);
+        // Floating toast, not an inline banner -- an inline message either
+        // clashed with whatever background sat behind it, or (with no
+        // background at all) looked like unstyled, broken text with no
+        // visual weight of its own. The toast is the same floating-card
+        // pattern used for every other transient message in the app
+        // (votes, roulette, the home-screen nudges), so this reads as an
+        // intentional response instead of a stray leftover element.
+        showHomeNudge('⚠️ ' + (d.message || 'Nothing to time-travel yet.'), 4500);
         return;
       }
-      msgEl.style.display = 'none';
       checkReminders();
     });
 }
 $('#demo-time-travel-fab').addEventListener('click', () => {
-  triggerDemoTimeTravel($('#demo-time-travel-fab-msg'));
+  triggerDemoTimeTravel();
 });
 $('#demo-time-travel-fab-home').addEventListener('click', () => {
-  triggerDemoTimeTravel($('#demo-time-travel-fab-msg-home'));
+  triggerDemoTimeTravel();
 });
 
 $('#roulette-btn').addEventListener('click', () => {
@@ -2614,8 +2666,8 @@ $('#checkout-items').addEventListener('click', (e) => {
   if(chip){
     const itemId = chip.dataset.assignItem;
     const buyerId = chip.dataset.assignBuyer;
-    const alreadyAssignedToThem = chip.classList.contains('active');
-    assignItem(itemId, alreadyAssignedToThem ? null : buyerId);
+    const alreadyClaimed = chip.classList.contains('active');
+    assignItem(itemId, buyerId, !alreadyClaimed);
     return;
   }
   const tagChip = e.target.closest('.tag-chip');
@@ -2696,7 +2748,15 @@ function checkReminders(){
 
       const icon = OCCASION_EMOJI[reminder.occasion] || '🎁';
       $('#reminder-modal-sub').textContent = `It's around ${new Date().toLocaleDateString('en-IN', { day:'numeric', month:'long', year:'numeric' })}`;
-      const isSelf = reminder.is_owner && (reminder.recipient_relation || '').toLowerCase() === 'myself';
+      // reminder.person is already the complete, correct label from the
+      // backend (recipient name/relation, same for every viewer -- see
+      // get_reminders() in main.py). This used to wrap it in ANOTHER
+      // possessive here ("${reminder.person}'s"), which is exactly how
+      // "Aishnaa's Parnika" became "Aishnaa's Parnika's Birthday" -- two
+      // layers of possessive stacking on top of each other. Only the
+      // genuinely different case (a gift for yourself) gets special
+      // handling; everything else is used as-is.
+      const isSelf = reminder.is_self_gift;
       const possessive = isSelf ? 'Your' : `${reminder.person}'s`;
       const forWhom = isSelf ? 'yourself' : reminder.person;
 
@@ -2755,7 +2815,7 @@ $('#reminder-recs').addEventListener('click', (e) => {
   openLandingForReminder(activeReminder.occasion, activeReminder.recipient_relation, activeReminder.recipient_name);
 });
 $('#reminder-close-btn').addEventListener('click', () => {
-  $('#reminder-modal').classList.remove('show');
+  closeReminderAndCheckNext();
 });
 $('#reminder-archive-btn').addEventListener('click', () => {
   if(!activeReminder) return;
@@ -2763,6 +2823,19 @@ $('#reminder-archive-btn').addEventListener('click', () => {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ room_code: activeReminder.room_code })
   }).catch(() => {});
+  closeReminderAndCheckNext();
+});
+
+// Closes the modal, then checks whether ANOTHER reminder is waiting.
+// checkReminders() previously only ever ran once, at page load -- so if two
+// gift squads both became eligible (e.g. Parnika's and Palak's birthdays in
+// the same window), dismissing the first one never surfaced the second.
+// It would only ever appear on a full page reload, which looked exactly
+// like it had silently vanished. A short delay lets the close animation
+// finish before a new modal could appear, so it doesn't look like the same
+// modal just snapped back open.
+function closeReminderAndCheckNext(){
   $('#reminder-modal').classList.remove('show');
   activeReminder = null;
-});
+  setTimeout(checkReminders, 350);
+}
