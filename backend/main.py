@@ -116,6 +116,7 @@ def save_rooms():
 
 MAX_ACTIVITY_LOG = 300
 MAX_CHAT_MESSAGES = 200
+MAX_FINISHED_SQUADS = 500
 FLUSH_INTERVAL_SECONDS = 3
 PRUNE_INTERVAL_SECONDS = 600
 # An abandoned room is one created (usually by someone poking at the QR link)
@@ -702,14 +703,25 @@ def get_reminders(email: str = ""):
             continue
         if squad.get("reminded"):
             continue
+        # "Just Browsing" isn't an occasion that recurs annually -- it's the
+        # absence of one. "Rhea's Just Browsing is coming up again!" is
+        # nonsense: there's no calendar date for "not having a specific
+        # plan." Only real occasions (Birthday, Anniversary, etc.) get a
+        # reminder a year later.
+        if squad.get("occasion") == "Just Browsing":
+            continue
 
-        # Only ever surface a reminder to someone who was actually part of
-        # this squad -- without this, ANY logged-in person would see every
-        # gift reminder ever created by anyone, including gifts that have
-        # nothing to do with them. A squad saved before this field existed
-        # has no participant_emails at all, so it's excluded entirely rather
-        # than guessed at -- unverifiable identity defaults to hidden, not shown.
-        participant_emails = [e.strip().lower() for e in squad.get("participant_emails", [])]
+        # Show the reminder to anyone who was in this squad. Simple and
+        # robust -- this is the version that reliably worked. Owner-only
+        # scoping was too fragile for a real two-device demo (whoever
+        # CREATED a squad owns it, but the other person, or the same person
+        # on another tab, would then match nobody and see nothing). A squad
+        # with no participant list recorded is skipped rather than shown to
+        # everyone.
+        participant_emails = [
+            (e or "").strip().lower()
+            for e in (squad.get("participant_emails") or [])
+        ]
         if not email or email not in participant_emails:
             continue
 
@@ -726,26 +738,19 @@ def get_reminders(email: str = ""):
         relation = squad.get("gift_recipient_relation", "")
         recipient_name = squad.get("gift_recipient_name", "")
         recipient_display = gift_recipient_display(relation, recipient_name)
+        is_self_gift = relation.strip().lower() == "myself"
 
-        # A relationship belongs to whoever set it, not to everyone who
-        # happened to co-shop it -- Aishnaa helping buy for Yoshita's mom
-        # doesn't make it Aishnaa's mom too. If the viewer is the owner, the
-        # label stays exactly as before ("Mom"); if not, it's attributed to
-        # whoever it actually belongs to ("Yoshita's Mom") so the reminder
-        # never implies a relationship the viewer doesn't have.
-        owner_email = (squad.get("gift_owner_email") or "").strip().lower()
-        is_owner = bool(owner_email) and email == owner_email
-        is_myself_relation = relation.strip().lower() == "myself"
-        if is_owner or not owner_email:
-            person_label = recipient_display
-        elif is_myself_relation:
-            # "Myself" needs its own case: "Yoshita's Myself" reads as
-            # nonsense. What the non-owner actually needs to know is whose
-            # purchase this was, plain and simple.
-            person_label = users.get(owner_email, {}).get("name") or next(iter(squad.get("members", [])), "a squadmate")
-        else:
-            owner_name = users.get(owner_email, {}).get("name") or next(iter(squad.get("members", [])), "a squadmate")
-            person_label = f"{owner_name}'s {recipient_display}" if recipient_display else f"{owner_name}'s"
+        # Same label for EVERY participant, regardless of who created the
+        # squad. This used to branch on "are you the owner" and, for anyone
+        # who wasn't, prefixed the creator's own name onto the recipient
+        # ("Aishnaa's Parnika") -- the frontend then wrapped THAT in its own
+        # possessive on top ("Aishnaa's Parnika's Birthday"). Two layers of
+        # attribution stacking is the whole bug. There's no ownership here
+        # to attribute in the first place: Aishnaa helping shop for Yoshi's
+        # mom doesn't make the reminder about Aishnaa at all -- it's about
+        # the recipient and the occasion, full stop, and that's identical no
+        # matter who's looking at it.
+        person_label = recipient_display
 
         bought_ids = {b["id"] for b in bought}
         bought_tags = {b["tag"] for b in bought}
@@ -759,7 +764,7 @@ def get_reminders(email: str = ""):
             "person": person_label,
             "recipient_relation": relation,
             "recipient_name": recipient_name,
-            "is_owner": is_owner or not owner_email,
+            "is_self_gift": is_self_gift,
             "room_code": squad["room_code"],
             "bought_item_name": bought[0]["name"] if bought else None,
             "bought_item_emoji": bought_first["emoji"] if bought_first else None,
@@ -769,6 +774,17 @@ def get_reminders(email: str = ""):
                 for r in recs
             ],
         })
+        # checkReminders() in app.js only ever shows reminders[0] -- a single
+        # modal, once. Without this break, the loop kept going and marked
+        # EVERY other qualifying squad as "reminded" too in the same pass,
+        # even though only the first one would ever actually be shown. That
+        # silently and permanently consumed the rest: if a second gift squad
+        # became eligible in the same window (exactly what happened here --
+        # Parnika's squad was still within its window when Rhea's squad also
+        # qualified), Parnika's reminder got marked seen and discarded
+        # without the person ever laying eyes on it. One reminder shown,
+        # one reminder marked -- never more than what's actually displayed.
+        break
 
     if reminders:
         save_finished_squads()
@@ -777,6 +793,12 @@ def get_reminders(email: str = ""):
 
 class ArchiveReminderRequest(BaseModel):
     room_code: str
+
+
+class DemoTimeTravelRequest(BaseModel):
+    # The caller's email, so time-travel only ages that user's own gift
+    # squads -- see demo_time_travel() for why this matters.
+    email: str = ""
 
 
 @app.post("/api/reminders/archive")
@@ -793,15 +815,45 @@ def archive_reminder(req: ArchiveReminderRequest):
 
 
 @app.post("/api/demo/time-travel")
-def demo_time_travel():
-    gift_squads = [s for s in finished_squads if s.get("gift_recipient_relation")]
-    if not gift_squads:
-        return {"error": "no_history", "message": "Finish a checkout with a gift recipient set first, then time-travel."}
-    latest = gift_squads[-1]
-    latest["when"] = (date.today() - timedelta(days=365)).isoformat()
-    latest["reminded"] = False
+def demo_time_travel(req: DemoTimeTravelRequest):
+    # Ages only the CURRENT user's own gift squads -- the ones they created,
+    # matched by gift_owner_email. Previously this aged every gift squad in
+    # the whole system regardless of who owned it, so one person's demo click
+    # resurrected strangers' and old sessions' squads, and reminders fired
+    # for gifts the clicker never shopped for. Scoping to the caller makes
+    # the demo predictable: click it, see reminders for YOUR gifts, nothing
+    # else.
+    email = (req.email or "").strip().lower()
+    if not email:
+        return {"error": "no_user", "message": "Log in first, then time-travel."}
+
+    # Age every gift squad the caller was a PARTICIPANT in -- not just ones
+    # they "own." In a real two-device demo, whoever created the squad owns
+    # it, but either person needs to be able to hit "jump a year" and see
+    # the reminders for the gifts they were part of. Owner-only scoping kept
+    # failing exactly this case.
+    my_gift_squads = [
+        s for s in finished_squads
+        if is_gift_recipient_set(s)
+        and s.get("occasion") != "Just Browsing"
+        and not s.get("archived")
+        and email in [(e or "").strip().lower() for e in (s.get("participant_emails") or [])]
+    ]
+    if not my_gift_squads:
+        return {"error": "no_history", "message": "No completed gift checkout yet -- finish one (with a recipient set) first, then come back here."}
+
+    # Re-age EVERY one of your gift squads, every click -- no one-shot flag.
+    # A demo button has to be repeatable: previously each squad could only
+    # ever be time-travelled once, so after the first click the button was
+    # dead for those squads and later runs showed either nothing or only
+    # whichever squad happened to still be un-aged. Re-arming all of them
+    # on every click makes it predictable -- click it, every gift you've
+    # shopped for comes due, in order.
+    for squad in my_gift_squads:
+        squad["when"] = (date.today() - timedelta(days=365)).isoformat()
+        squad["reminded"] = False
     save_finished_squads()
-    return {"ok": True}
+    return {"ok": True, "aged_count": len(my_gift_squads)}
 
 
 class ConnectionManager:
@@ -1046,18 +1098,38 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
 
                 elif action == "assign":
                     item_id = data.get("item_id")
-                    buyer_id = data.get("buyer_id") or None
-                    if buyer_id and buyer_id not in room["participants"]:
-                        buyer_id = None
-                    if buyer_id:
-                        room["assignments"][item_id] = buyer_id
+                    buyer_id = data.get("buyer_id")
+                    claim = bool(data.get("claim"))
+                    if not item_id or not buyer_id or buyer_id not in room["participants"]:
+                        continue
+
+                    # assignments[item_id] is a LIST of buyers, not a single
+                    # one -- this is the actual fix for "everyone logged on
+                    # to buy the same shirt for friendship day and couldn't."
+                    # A single-buyer-per-item model meant the moment ONE
+                    # person claimed an item, nobody else could claim their
+                    # own unit of it at all, even though the item reaching
+                    # the cart was a squad-wide style decision, not a claim
+                    # on one physical piece. Each person who claims it pays
+                    # for -- and is understood to be buying -- their own
+                    # separate unit, same as it would work if four friends
+                    # walked into a store and each picked up their own shirt
+                    # off the same rack.
+                    buyers = room["assignments"].setdefault(item_id, [])
+                    if claim:
+                        if buyer_id not in buyers:
+                            buyers.append(buyer_id)
                     else:
-                        room["assignments"].pop(item_id, None)
+                        if buyer_id in buyers:
+                            buyers.remove(buyer_id)
+                        if not buyers:
+                            room["assignments"].pop(item_id, None)
+
                     item = CATALOG_BY_ID.get(item_id)
-                    buyer_name = room["participants"].get(buyer_id) if buyer_id else None
+                    buyer_name = room["participants"].get(buyer_id)
                     event = {
                         "name": name,
-                        "verb": f"assigned to {buyer_name}" if buyer_name else "unassigned",
+                        "verb": f"claimed a unit for {buyer_name}" if claim else f"removed {buyer_name}'s claim",
                         "item": item["name"] if item else item_id,
                     }
 
@@ -1152,12 +1224,23 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                             my_total = round(cart_total / max(len(participant_ids), 1))
                         buyer_ids = set(participant_ids)
                     else:
+                        # assignments[item_id] is now a LIST of buyers (see
+                        # the "assign" action above) -- each person who
+                        # claimed a unit of an item pays full price for
+                        # THEIR OWN unit, not a shared split of one. Someone
+                        # claiming two different items pays for both.
                         my_total = sum(
                             CATALOG_BY_ID[i]["price"]
-                            for i, buyer in room["assignments"].items()
-                            if buyer == client_id and i in CATALOG_BY_ID
+                            for i, buyers in room["assignments"].items()
+                            if client_id in buyers and i in CATALOG_BY_ID
                         )
-                        buyer_ids = set(room["assignments"].values())
+                        # Flattened union of every buyer across every item --
+                        # was `set(room["assignments"].values())` when values
+                        # were single ids; now each value is itself a list,
+                        # so this needs one more level of unpacking or it
+                        # would silently produce a set of LISTS (unhashable,
+                        # would crash) instead of a set of buyer ids.
+                        buyer_ids = {b for buyers in room["assignments"].values() for b in buyers}
 
                     room["payments"][client_id] = True
                     event = {"name": name, "verb": "paid their share", "item": f"₹{my_total}"}
@@ -1201,6 +1284,15 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                             "had_itinerary": bool(room.get("itinerary")),
                             "archived": False,
                         })
+                        # Bound the history. Reminders only ever look ~a year
+                        # back and the list is re-serialised whole on every
+                        # checkout, so an unbounded finished_squads is both a
+                        # slowly-growing file and a slowly-growing write cost
+                        # over a busy day. Keeping the most recent
+                        # MAX_FINISHED_SQUADS is plenty for the reminder
+                        # feature and caps both.
+                        if len(finished_squads) > MAX_FINISHED_SQUADS:
+                            del finished_squads[:-MAX_FINISHED_SQUADS]
                         save_finished_squads()
                     elif room.get("checkout_expires_at") is None:
                         # First payment in on an order that isn't already
