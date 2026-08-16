@@ -1,37 +1,3 @@
-"""
-One-off catalog cleanup. Run once, from backend/:
-
-    python normalize_catalog.py
-
-Writes catalog.json.backup first, then rewrites catalog.json in place and
-prints exactly what changed. Safe to re-run -- it's idempotent (a second run
-reports zero changes).
-
-WHY THIS EXISTS
----------------
-Two kinds of drift crept in as the catalog grew past ~p70.
-
-1. DUPLICATE CATEGORY SPELLINGS. "Co-ord" and "Coord" are the same thing, as
-   are "Beauty" and "Makeup". Every occasion table then has to list both
-   spellings or silently drop items -- which is why the weight tables ended
-   up with defensive double entries. One spelling means one entry.
-
-2. ORPHAN TAGS. The recommender only understands ten tags (ethnic, western,
-   floral, solid, party, office, beach, monsoon, beauty, home). Nine more
-   appeared in the catalog -- glam, boho, everyday, tools, formal, decor,
-   winter, casual, bath -- and none of them appear in OCCASION_TAGS or in the
-   season table. 23 of 91 items could therefore never match an occasion or a
-   season, no matter what.
-
-   Worse for the live-learning story: six of those tags are on exactly ONE
-   item each. member_tag_pref learns per tag, so a like on the eyelash curler
-   ('tools') taught the recommender nothing, because no other item shared the
-   tag. That's the flagship "it learns as you swipe" feature quietly doing
-   nothing on a quarter of the shelf.
-
-Mapping is per-item where the right answer depends on the category -- e.g.
-'everyday' means 'beauty' on a mascara and 'western' on a pair of flats.
-"""
 import json
 import shutil
 from collections import Counter

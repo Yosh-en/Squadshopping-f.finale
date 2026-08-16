@@ -17,8 +17,8 @@
     <div id="topbar-left"><div class="m-logo">M</div></div>
     <div class="topbar-pill"><span class="ph">Search in Myntra</span><span class="glyphs">🎤 📷</span></div>
     <div class="topbar-icons">
-      <span class="ic">🔔<span class="dot">3</span></span>
-      <span class="ic">♡</span>
+      <span class="ic" id="topbar-notif-btn">🔔<span class="dot" id="topbar-notif-dot">3</span></span>
+      <span class="ic" id="topbar-wishlist-btn">♡</span>
       <span class="ic" onclick="showScreen('screen-profile')">👤</span>
     </div>
   </div>
@@ -37,35 +37,81 @@
 
       <div id="onboarding-modal" class="modal-overlay">
         <div class="modal-card login-modal-card">
-      
-          <!-- LOGIN step -- mirrors the real Myntra login screen: gradient logo,
-                     email + password, "Keep me logged in" + "Forgot Password" row,
-                     pink Login button, "Don't have an account? Sign up" link.
-                     No real password check happens anywhere -- see app.js's login
-                     handler for why, and what actually gets checked instead. -->
+
+          <!-- LOGIN step -- real email + password. The password is actually
+                     checked server-side now (see /api/login in main.py) --
+                     it's a hashed, salted check, not the name-only stand-in
+                     this screen used to be. -->
           <div id="onboarding-step-login" class="onboarding-step">
             <div class="login-logo-wrap">
               <div class="m-logo login-logo-big">M</div>
             </div>
-      
+
             <div class="login-title login-title-center">
               Welcome to Squad Shopping
             </div>
-      
+
             <p class="login-subtitle" style="text-align:center;">
-              Enter your name to get started
+              Log in to get started
             </p>
-      
+
             <form id="onboarding-login-form">
               <div class="login-icon-input-row">
-                <span class="login-input-icon">👤</span>
-                <input id="onboarding-name" type="text" placeholder="Enter your name" autocomplete="name" required />
+                <span class="login-input-icon">✉️</span>
+                <input id="onboarding-login-email" type="email" placeholder="Email" autocomplete="email" required />
               </div>
-      
+              <div class="login-icon-input-row">
+                <span class="login-input-icon">🔒</span>
+                <input id="onboarding-login-password" type="password" placeholder="Password" autocomplete="current-password" required />
+              </div>
+
               <div class="field-error" id="onboarding-login-error"></div>
-      
+
               <button class="login-cta" type="submit">LOGIN</button>
             </form>
+
+            <p class="login-signup-row">
+              Don't have an account? <span class="login-link" id="onboarding-goto-signup">Sign up</span>
+            </p>
+          </div>
+
+          <!-- SIGNUP step -- name + email + password. Creates the account
+                     and logs the person straight in (see /api/signup). -->
+          <div id="onboarding-step-signup" class="onboarding-step" style="display:none;">
+            <div class="login-logo-wrap">
+              <div class="m-logo login-logo-big">M</div>
+            </div>
+
+            <div class="login-title login-title-center">
+              Create your account
+            </div>
+
+            <p class="login-subtitle" style="text-align:center;">
+              Join the squad in a few seconds
+            </p>
+
+            <form id="onboarding-signup-form">
+              <div class="login-icon-input-row">
+                <span class="login-input-icon">👤</span>
+                <input id="onboarding-signup-name" type="text" placeholder="Your name" autocomplete="name" required />
+              </div>
+              <div class="login-icon-input-row">
+                <span class="login-input-icon">✉️</span>
+                <input id="onboarding-signup-email" type="email" placeholder="Email" autocomplete="email" required />
+              </div>
+              <div class="login-icon-input-row">
+                <span class="login-input-icon">🔒</span>
+                <input id="onboarding-signup-password" type="password" placeholder="Password (min. 6 characters)" autocomplete="new-password" minlength="6" required />
+              </div>
+
+              <div class="field-error" id="onboarding-signup-error"></div>
+
+              <button class="login-cta" type="submit">SIGN UP</button>
+            </form>
+
+            <p class="login-signup-row">
+              Already have an account? <span class="login-link" id="onboarding-goto-login">Log in</span>
+            </p>
           </div>
         </div>
       </div>
@@ -94,12 +140,12 @@
       <div class="cat-tabs"><span class="active">ALL</span><span>MEN</span><span>WOMEN</span><span>KIDS</span></div>
 
       <div class="shortcut-row">
-        <div class="shortcut"><div class="circ">👔</div><span>Fashion</span></div>
-        <div class="shortcut"><div class="circ">💄</div><span>Beauty</span></div>
-        <div class="shortcut"><div class="circ">🏠</div><span>Home</span></div>
-        <div class="shortcut"><div class="circ">👠</div><span>Footwear</span></div>
-        <div class="shortcut"><div class="circ">👜</div><span>Accessories</span></div>
-        <div class="shortcut"><div class="circ">✦</div><span>Value+</span></div>
+        <div class="shortcut"><div class="circ"><img src="/static/images/icons/fashion.png" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><span class="fallback-emoji" style="display:none;">👔</span></div><span>Fashion</span></div>
+        <div class="shortcut"><div class="circ"><img src="/static/images/icons/beauty.png" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><span class="fallback-emoji" style="display:none;">💄</span></div><span>Beauty</span></div>
+        <div class="shortcut"><div class="circ"><img src="/static/images/icons/home.png" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><span class="fallback-emoji" style="display:none;">🏠</span></div><span>Home</span></div>
+        <div class="shortcut"><div class="circ"><img src="/static/images/icons/footwear.png" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><span class="fallback-emoji" style="display:none;">👠</span></div><span>Footwear</span></div>
+        <div class="shortcut"><div class="circ"><img src="/static/images/icons/accessories.png" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><span class="fallback-emoji" style="display:none;">👜</span></div><span>Accessories</span></div>
+        <div class="shortcut"><div class="circ"><img src="/static/images/icons/value-plus.png" alt="" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"><span class="fallback-emoji" style="display:none;">✦</span></div><span>Value+</span></div>
       </div>
 
       <div class="trending-row">
@@ -111,7 +157,8 @@
         <span class="trending-chip">Blazers</span>
       </div>
 
-      <div class="hero-banner">
+      <div class="hero-banner" id="hero-banner">
+        <img class="hero-banner-product" id="hero-banner-product" alt="" />
         <div class="eyebrow">THE FESTIVE SPOTLIGHT</div>
         <h2>50–70% Off</h2>
       </div>
@@ -150,6 +197,46 @@
           <span>Bags</span>
         </div>
       </div>
+    </div>
+
+    <!-- NOTIFICATIONS -->
+    <div id="screen-notifications" class="screen">
+      <div class="simple-screen-header">Notifications</div>
+      <div id="notif-list" class="notif-list"></div>
+    </div>
+
+    <!-- WISHLIST -->
+    <div id="screen-wishlist" class="screen">
+      <div class="simple-screen-header">Wishlist</div>
+      <div id="wishlist-grid" class="pgrid"></div>
+    </div>
+
+    <!-- BAG -->
+    <div id="screen-bag" class="screen">
+      <div class="simple-screen-header">Bag</div>
+      <div id="bag-list" class="bag-list"></div>
+      <div id="bag-summary" class="bag-summary" style="display:none;">
+        <div class="bag-summary-row"><span>Total</span><span id="bag-summary-total">₹0</span></div>
+        <button class="login-cta" id="bag-checkout-btn" type="button">PROCEED</button>
+      </div>
+    </div>
+
+    <!-- FWD (trend/editorial shelf) -->
+    <div id="screen-fwd" class="screen">
+      <div class="simple-screen-header">⚡ Fwd -- What's Trending</div>
+      <div id="fwd-grid" class="pgrid"></div>
+    </div>
+
+    <!-- NOW (quick delivery shelf) -->
+    <div id="screen-now" class="screen">
+      <div class="simple-screen-header">🕐 M-Now -- Delivered in 10 mins</div>
+      <div id="now-grid" class="pgrid"></div>
+    </div>
+
+    <!-- LUXE (premium shelf) -->
+    <div id="screen-luxe" class="screen luxe-screen">
+      <div class="simple-screen-header luxe-header">💎 LUXE</div>
+      <div id="luxe-grid" class="pgrid"></div>
     </div>
 
     <!-- PROFILE -->
@@ -253,18 +340,6 @@
               <label>When (optional)</label>
               <input id="create-when" type="date" />
             </div>
-          </div>
-
-          <button type="button" class="optional-toggle" id="toggle-itinerary">+ Planning a multi-day trip? Add itinerary</button>
-          <div class="optional-section" id="itinerary-section" style="display:none;">
-            <label>Trip itinerary</label>
-            <input id="create-itinerary" type="text" placeholder="e.g. Mehendi, Shaadi, Reception" />
-            <div class="preset-row">
-              <button type="button" class="preset-chip" data-preset="Mehendi, Shaadi, Reception">🎊 Wedding Trip</button>
-              <button type="button" class="preset-chip" data-preset="Beach Day, Cafe Hopping, Date Night">🏖️ Beach Getaway</button>
-              <button type="button" class="preset-chip" data-preset="Office, Cafe Hopping">💼 Work Week</button>
-            </div>
-            <div class="hint">Separate each function with a comma -- lets you tag items to specific days.</div>
           </div>
 
           <label>Squad budget (₹)</label>
@@ -436,10 +511,10 @@
 
   <div class="app-bottomnav">
     <div class="nav-item active" id="nav-home" onclick="showScreen('screen-home')"><span class="nav-ic">🏠</span><span class="nav-label">Home</span></div>
-    <div class="nav-item" id="nav-fwd"><span class="nav-ic">⚡</span><span class="nav-label">fwd</span></div>
-    <div class="nav-item" id="nav-now"><span class="nav-ic">🕐</span><span class="nav-label">now</span></div>
-    <div class="nav-item" id="nav-luxe"><span class="nav-ic">💎</span><span class="nav-label">LUXE</span></div>
-    <div class="nav-item" id="nav-bag"><span class="nav-ic">👜</span><span class="nav-label">Bag</span></div>
+    <div class="nav-item" id="nav-fwd" onclick="showScreen('screen-fwd')"><span class="nav-ic">⚡</span><span class="nav-label">fwd</span></div>
+    <div class="nav-item" id="nav-now" onclick="showScreen('screen-now')"><span class="nav-ic">🕐</span><span class="nav-label">now</span></div>
+    <div class="nav-item" id="nav-luxe" onclick="showScreen('screen-luxe')"><span class="nav-ic">💎</span><span class="nav-label">LUXE</span></div>
+    <div class="nav-item" id="nav-bag" onclick="showScreen('screen-bag')"><span class="nav-ic">👜<span class="dot" id="bag-count-dot" style="display:none;">0</span></span><span class="nav-label">Bag</span></div>
   </div>
 </div>
 

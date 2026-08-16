@@ -753,6 +753,56 @@ def parse_ai_chat_intent(text: str):
     }
 
 
+def pick_chat_recommendation_items(intent: dict, catalog: list, n: int = 4) -> list:
+    """Given a parsed filter from parse_ai_chat_intent() (the {...} shape,
+    never "clear" or {}), returns up to n catalog item ids to show as
+    tappable product chips under the AI's chat reply.
+
+    Deliberately mirrors the scoring applyAiChatFilter() uses client-side to
+    rank the shelf (same +5 per matched color/tag/category, +3 for rating,
+    small price nudge) rather than inventing a second notion of "relevant" --
+    the chips in chat should agree with what actually rises to the top of
+    the shelf, not just be independently plausible-looking.
+    """
+    exclude = set(intent.get("exclude_colors") or [])
+    items = [it for it in catalog if it.get("color") not in exclude] if exclude else list(catalog)
+
+    include_colors = set(intent.get("include_colors") or [])
+    include_tags = set(intent.get("include_tags") or [])
+    include_cats = set(intent.get("include_categories") or [])
+    min_rating = intent.get("min_rating")
+    price_dir = intent.get("price_direction")
+
+    def score(it):
+        s = 0.0
+        if it.get("color") in include_colors:
+            s += 5
+        if it.get("tag") in include_tags:
+            s += 5
+        if it.get("category") in include_cats:
+            s += 5
+        if min_rating and it.get("rating", 0) >= min_rating:
+            s += 3
+        if price_dir == "cheaper":
+            s += (5000 - it.get("price", 0)) / 2000
+        if price_dir == "pricier":
+            s += it.get("price", 0) / 2000
+        return s
+
+    has_signal = bool(include_colors or include_tags or include_cats or min_rating or price_dir)
+    if has_signal:
+        scored = [(score(it), it) for it in items]
+        scored = [(s, it) for s, it in scored if s > 0]
+        scored.sort(key=lambda pair: (-pair[0], -pair[1].get("rating", 0)))
+    else:
+        # Only an exclude-color ask ("less black") -- nothing to rank a match
+        # score by, so just surface the best-rated items from what's left.
+        scored = [(it.get("rating", 0), it) for it in items]
+        scored.sort(key=lambda pair: -pair[0])
+
+    return [it["id"] for _, it in scored[:n]]
+
+
 def vote_status(votes: dict, participant_count: int) -> str:
     """Classifies a single item's vote state relative to majority, aware of
     how many participants COULD still vote -- not just how many already

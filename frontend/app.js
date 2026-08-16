@@ -47,6 +47,12 @@ const state = {
   currentConsideringItemId: null,
   reconnectAttempts: 0,
   reconnectTimer: null,
+  homeCatalog: [],
+  homeCatalogById: {},
+  homeCatalogLoaded: false,
+  wishlistIds: new Set(),
+  bagQty: new Map(),
+  notifUnread: 3,
 };
 const $ = s => document.querySelector(s);
 const $all = s => document.querySelectorAll(s);
@@ -59,13 +65,21 @@ const $all = s => document.querySelectorAll(s);
 // error immediately, before ever opening a socket.
 const MAX_SQUAD_SIZE = 6;
 
-const backMap = { 'screen-profile':'screen-home', 'screen-landing':'screen-profile', 'screen-room':'screen-landing', 'screen-checkout':'screen-room' };
+const backMap = {
+  'screen-profile':'screen-home', 'screen-landing':'screen-profile', 'screen-room':'screen-landing', 'screen-checkout':'screen-room',
+  'screen-notifications':'screen-home', 'screen-wishlist':'screen-home', 'screen-bag':'screen-home',
+  'screen-fwd':'screen-home', 'screen-now':'screen-home', 'screen-luxe':'screen-home',
+};
 
 function showScreen(id){
   $all('.screen').forEach(s=>s.classList.remove('active'));
   $('#'+id).classList.add('active');
   $all('.nav-item').forEach(n=>n.classList.remove('active'));
   if(id === 'screen-home') $('#nav-home').classList.add('active');
+  if(id === 'screen-fwd') $('#nav-fwd').classList.add('active');
+  if(id === 'screen-now') $('#nav-now').classList.add('active');
+  if(id === 'screen-luxe') $('#nav-luxe').classList.add('active');
+  if(id === 'screen-bag') $('#nav-bag').classList.add('active');
   if(id === 'screen-landing') updateSquadResumeBanner();
   if(id !== 'screen-room'){
     state.returnToCheckoutAfterJump = false;
@@ -75,6 +89,17 @@ function showScreen(id){
   if(id !== 'screen-room' && id !== 'screen-checkout' && state.chatOpen){
     closeChatDrawer();
   }
+
+  // Home-nav feature screens all pull from the same catalog fetch and
+  // re-render fresh every time you open them, so a heart/bag tap made from
+  // another screen (e.g. the LUXE grid) is always reflected correctly --
+  // there's no separate per-screen state to fall out of sync.
+  if(id === 'screen-notifications') { markNotificationsRead(); renderNotifications(); }
+  if(id === 'screen-wishlist') ensureHomeCatalogLoaded().then(renderWishlistScreen);
+  if(id === 'screen-bag') renderBagScreen();
+  if(id === 'screen-fwd') ensureHomeCatalogLoaded().then(renderFwdScreen);
+  if(id === 'screen-now') ensureHomeCatalogLoaded().then(renderNowScreen);
+  if(id === 'screen-luxe') ensureHomeCatalogLoaded().then(renderLuxeScreen);
 
   const left = $('#topbar-left');
   if(id === 'screen-home'){
@@ -169,8 +194,14 @@ function applyUserNameToUI(name){
 }
 
 function showOnboardingLoginStep(){
+  $('#onboarding-step-signup').style.display = 'none';
   $('#onboarding-step-login').style.display = 'block';
-  clearCollisionPrompt();
+  $('#onboarding-modal').classList.add('show');
+}
+
+function showOnboardingSignupStep(){
+  $('#onboarding-step-login').style.display = 'none';
+  $('#onboarding-step-signup').style.display = 'block';
   $('#onboarding-modal').classList.add('show');
 }
 
@@ -183,105 +214,107 @@ function closeOnboarding(){ $('#onboarding-modal').classList.remove('show'); }
   else showOnboardingLoginStep();
 })();
 
-// "Login" only ever checks whether this email has an account -- it never
-// checks the password field. There's no real backend auth in this build,
-// so pretending to verify a password would be a false promise, not a real
-// safeguard. The field stays visually (it's what makes this read as a real
-// login rather than a magic-link gimmick).
-// Actually performs the login call. Split out from the submit handler so
-// the collision-confirmation buttons below can re-call it with
-// confirm_existing/confirm_new set, without duplicating the fetch logic.
-async function attemptLogin(name, extra = {}){
+// Real email + password now, checked server-side (see /api/login in
+// main.py -- a salted, hashed comparison, not a name-only stand-in).
+$('#onboarding-goto-signup').addEventListener('click', () => {
+  $('#onboarding-login-error').textContent = '';
+  showOnboardingSignupStep();
+});
+$('#onboarding-goto-login').addEventListener('click', () => {
+  $('#onboarding-signup-error').textContent = '';
+  showOnboardingLoginStep();
+});
+
+const LOGIN_ERROR_MESSAGES = {
+  missing_fields: 'Please enter your email and password.',
+  invalid_credentials: 'Incorrect email or password.',
+};
+
+$('#onboarding-login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const email = $('#onboarding-login-email').value.trim();
+  const password = $('#onboarding-login-password').value;
   const errorEl = $('#onboarding-login-error');
+  errorEl.textContent = '';
+
+  if(!email || !password){
+    errorEl.textContent = 'Please enter your email and password.';
+    return;
+  }
+
   try {
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, ...extra })
+      body: JSON.stringify({ email, password })
     });
     const data = await res.json();
 
     if (res.ok && data.ok) {
       setStoredUserEmail(data.user_id);
-      setStoredUserName(data.name || name);
-      applyUserNameToUI(data.name || name);
+      setStoredUserName(data.name || '');
+      applyUserNameToUI(data.name || '');
+      $('#onboarding-login-password').value = '';
       closeOnboarding();
       return;
     }
 
-    if (data.error === 'name_taken') {
-      // A real person is already using this name -- don't guess. Ask once,
-      // plainly, instead of silently merging into whoever that is. This is
-      // the ONLY extra step in the whole flow, and only ever appears on an
-      // actual collision -- a unique name still logs straight in.
-      //
-      // The LOGIN button is hidden while this is pending (see the
-      // .collision-pending CSS): leaving it visible put three buttons in a
-      // row with no breathing space, and tapping it would only have
-      // re-asked the identical question. The two answers ARE the submit now.
-      errorEl.classList.add('login-collision');
-      errorEl.innerHTML = `
-        <div class="login-collision-q">There's already a squad member named <b>${escapeHtml(data.existing_name)}</b>. Is that you?</div>
-        <div class="login-collision-actions">
-          <button type="button" class="login-collision-yes" data-collision-name="${escapeHtml(name)}">Yes, that's me</button>
-          <button type="button" class="login-collision-no" data-collision-name="${escapeHtml(name)}">No, that's someone else</button>
-        </div>`;
-      $('#onboarding-login-form').classList.add('collision-pending');
+    errorEl.textContent = LOGIN_ERROR_MESSAGES[data.error] || 'Could not log in. Please try again.';
+  } catch (err) {
+    console.error(err);
+    errorEl.textContent = 'Unable to connect. Please try again.';
+  }
+});
+
+const SIGNUP_ERROR_MESSAGES = {
+  missing_fields: 'Please fill in your name, email, and password.',
+  invalid_email: 'That doesn\'t look like a valid email address.',
+  weak_password: 'Password must be at least 6 characters.',
+  already_exists: 'An account with that email already exists -- try logging in instead.',
+};
+
+$('#onboarding-signup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const name = $('#onboarding-signup-name').value.trim();
+  const email = $('#onboarding-signup-email').value.trim();
+  const password = $('#onboarding-signup-password').value;
+  const errorEl = $('#onboarding-signup-error');
+  errorEl.textContent = '';
+
+  if(!name || !email || !password){
+    errorEl.textContent = 'Please fill in your name, email, and password.';
+    return;
+  }
+  if(password.length < 6){
+    errorEl.textContent = 'Password must be at least 6 characters.';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, email, password })
+    });
+    const data = await res.json();
+
+    if (res.ok && data.ok) {
+      // Signup logs the person straight in -- no separate login round-trip
+      // for credentials they just typed here (see /api/signup's comment).
+      setStoredUserEmail(data.user_id);
+      setStoredUserName(data.name || name);
+      applyUserNameToUI(data.name || name);
+      $('#onboarding-signup-password').value = '';
+      closeOnboarding();
       return;
     }
 
-    clearCollisionPrompt();
-    errorEl.textContent = data.error || 'Could not continue. Please try again.';
+    errorEl.textContent = SIGNUP_ERROR_MESSAGES[data.error] || 'Could not sign up. Please try again.';
   } catch (err) {
     console.error(err);
-    clearCollisionPrompt();
     errorEl.textContent = 'Unable to connect. Please try again.';
-  }
-}
-
-// Puts the form back to its normal one-button state.
-function clearCollisionPrompt(){
-  const errorEl = $('#onboarding-login-error');
-  errorEl.classList.remove('login-collision');
-  errorEl.innerHTML = '';
-  $('#onboarding-login-form').classList.remove('collision-pending');
-}
-
-// Editing the name makes the pending question stale -- it was about the old
-// name. Clear it so LOGIN comes back rather than leaving them staring at a
-// question that no longer matches what's in the box.
-$('#onboarding-name').addEventListener('input', clearCollisionPrompt);
-
-$('#onboarding-login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-
-  const name = $('#onboarding-name').value.trim();
-  const errorEl = $('#onboarding-login-error');
-  errorEl.textContent = '';
-
-  if(!name){
-    errorEl.textContent = 'Please enter your name.';
-    return;
-  }
-
-  await attemptLogin(name);
-});
-
-// Handles the two collision-confirmation buttons rendered above. Delegated
-// onto the error slot itself since its content is replaced dynamically.
-$('#onboarding-login-error').addEventListener('click', (e) => {
-  const yesBtn = e.target.closest('.login-collision-yes');
-  if(yesBtn){
-    const name = yesBtn.dataset.collisionName;
-    clearCollisionPrompt();
-    attemptLogin(name, { confirm_existing: true });
-    return;
-  }
-  const noBtn = e.target.closest('.login-collision-no');
-  if(noBtn){
-    const name = noBtn.dataset.collisionName;
-    clearCollisionPrompt();
-    attemptLogin(name, { confirm_new: true });
   }
 });
 
@@ -290,9 +323,285 @@ $('#onboarding-login-error').addEventListener('click', (e) => {
 // login so a different email can sign in on this same tab.
 $('#demo-switch-name-btn').addEventListener('click', () => {
   clearStoredIdentity();
-  $('#onboarding-name').value = '';
+  $('#onboarding-login-email').value = '';
+  $('#onboarding-login-password').value = '';
   showOnboardingLoginStep();
 });
+
+// ---- Home-nav feature screens: Notifications, Wishlist, Bag, Fwd, Now,
+// LUXE -----------------------------------------------------------------
+// All lightweight and client-side by design: they read from the shared
+// product catalog (fetched once, below) and keep wishlist/bag state in
+// memory for the tab's session. Nothing here writes to users.json or
+// rooms_state.json on the backend -- a refresh resets it, same as every
+// other piece of local UI state in this app (chat scroll position, which
+// tab is active, etc).
+
+async function ensureHomeCatalogLoaded(){
+  if(state.homeCatalogLoaded) return;
+  try {
+    const res = await fetch('/api/catalog');
+    const data = await res.json();
+    state.homeCatalog = data.catalog || [];
+    state.homeCatalogById = {};
+    state.homeCatalog.forEach(item => { state.homeCatalogById[item.id] = item; });
+    state.homeCatalogLoaded = true;
+    setHeroBannerProduct();
+  } catch(err) {
+    console.error('Could not load catalog', err);
+  }
+}
+
+// Swaps in a random product photo on the home hero banner. Re-picked once
+// per catalog load (i.e. once per page load) rather than on every render --
+// a banner that changes photo every time you glance at the home screen
+// would read as broken, not dynamic.
+function setHeroBannerProduct(){
+  const img = $('#hero-banner-product');
+  if(!img || !state.homeCatalog.length) return;
+  const withImages = state.homeCatalog.filter(i => i.image);
+  const pick = (withImages.length ? withImages : state.homeCatalog)[
+    Math.floor(Math.random() * (withImages.length ? withImages.length : state.homeCatalog.length))
+  ];
+  if(pick && pick.image){
+    img.src = pick.image;
+    img.alt = pick.name || '';
+    img.style.display = 'block';
+  }
+}
+
+function discountPct(item){
+  if(!item.mrp || item.mrp <= item.price) return 0;
+  return Math.round((1 - item.price / item.mrp) * 100);
+}
+
+// Shared card renderer for every product shelf (Wishlist / Fwd / Now /
+// LUXE). One function so a heart-toggle or add-to-bag tap behaves
+// identically no matter which shelf it happened on.
+function productCardHtml(item){
+  const wished = state.wishlistIds.has(item.id);
+  const inBag = state.bagQty.has(item.id);
+  const disc = discountPct(item);
+  return `
+    <div class="pcard" data-pid="${item.id}">
+      <div class="pcard-media">
+        ${mediaHtml(item)}
+        <button type="button" class="pcard-heart ${wished ? 'active' : ''}" data-wish="${item.id}" aria-label="Wishlist">${wished ? '♥' : '♡'}</button>
+      </div>
+      <div class="pcard-body">
+        <div class="pcard-brand">${escapeHtml(item.brand || '')}</div>
+        <div class="pcard-name">${escapeHtml(item.name || '')}</div>
+        <div class="pcard-price-row">
+          <span class="price">₹${item.price}</span>
+          ${item.mrp ? `<span class="mrp">₹${item.mrp}</span>` : ''}
+          ${disc ? `<span class="discount">${disc}% OFF</span>` : ''}
+        </div>
+        <button type="button" class="pcard-bag-btn ${inBag ? 'in-bag' : ''}" data-bag="${item.id}">${inBag ? 'Added ✓' : '+ Add to Bag'}</button>
+      </div>
+    </div>`;
+}
+
+function renderProductGrid(containerId, items, emptyMessage){
+  const el = $('#'+containerId);
+  if(!el) return;
+  if(!items.length){
+    el.innerHTML = `<div class="pgrid-empty">${escapeHtml(emptyMessage)}</div>`;
+    return;
+  }
+  el.innerHTML = items.map(productCardHtml).join('');
+}
+
+function renderWishlistScreen(){
+  const items = state.homeCatalog.filter(i => state.wishlistIds.has(i.id));
+  renderProductGrid('wishlist-grid', items, "Nothing here yet -- tap the ♡ on any product to save it.");
+}
+
+// "Trending" shelf -- items whose tag reads as trend-led categories, same
+// idea as the home screen's own Trending chip row just above the banner.
+const FWD_TAGS = new Set(['party', 'glam', 'western', 'boho']);
+function renderFwdScreen(){
+  const items = state.homeCatalog.filter(i => FWD_TAGS.has(i.tag));
+  renderProductGrid('fwd-grid', items.length ? items : state.homeCatalog.slice(0, 12), "Nothing trending right now.");
+}
+
+// "Quick delivery" shelf -- a fixed-but-varied slice of the catalog rather
+// than a real logistics/ETA system, since that data doesn't exist anywhere
+// in this app. Picked deterministically (every 4th item) so it doesn't
+// reshuffle every time you tap into it.
+function renderNowScreen(){
+  const items = state.homeCatalog.filter((_, i) => i % 4 === 0);
+  renderProductGrid('now-grid', items, "Nothing available for quick delivery right now.");
+}
+
+// "LUXE" shelf -- the catalog's highest-priced items, styled with the
+// darker/gold theme in style.css to read as a distinct zone rather than
+// just another shelf.
+function renderLuxeScreen(){
+  const items = [...state.homeCatalog].sort((a, b) => b.price - a.price).slice(0, 12);
+  renderProductGrid('luxe-grid', items, "No LUXE picks available.");
+}
+
+function renderBagScreen(){
+  const listEl = $('#bag-list');
+  const summaryEl = $('#bag-summary');
+  const entries = [...state.bagQty.entries()].filter(([id]) => state.homeCatalogById[id]);
+  if(!entries.length){
+    listEl.innerHTML = `<div class="bag-empty">Your bag is empty -- add something from Wishlist, fwd, now, or LUXE.</div>`;
+    summaryEl.style.display = 'none';
+    return;
+  }
+  let total = 0;
+  listEl.innerHTML = entries.map(([id, qty]) => {
+    const item = state.homeCatalogById[id];
+    total += item.price * qty;
+    return `
+      <div class="bag-row" data-pid="${id}">
+        <div class="bag-row-media">${mediaHtml(item)}</div>
+        <div class="bag-row-info">
+          <div class="bag-row-brand">${escapeHtml(item.brand || '')}</div>
+          <div class="bag-row-name">${escapeHtml(item.name || '')}</div>
+          <div class="bag-row-price">₹${item.price * qty}</div>
+          <div class="bag-row-actions">
+            <button type="button" class="bag-qty-btn" data-qty-down="${id}">−</button>
+            <span class="bag-qty-val">${qty}</span>
+            <button type="button" class="bag-qty-btn" data-qty-up="${id}">+</button>
+            <span class="bag-remove-link" data-bag-remove="${id}">Remove</span>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+  summaryEl.style.display = 'block';
+  $('#bag-summary-total').textContent = `₹${total}`;
+  updateBagNavBadge();
+}
+
+function updateBagNavBadge(){
+  const dot = $('#bag-count-dot');
+  if(!dot) return;
+  const count = [...state.bagQty.values()].reduce((a, b) => a + b, 0);
+  if(count > 0){
+    dot.textContent = count > 9 ? '9+' : String(count);
+    dot.style.display = 'flex';
+  } else {
+    dot.style.display = 'none';
+  }
+}
+
+function toggleWishlist(id){
+  if(state.wishlistIds.has(id)) state.wishlistIds.delete(id);
+  else state.wishlistIds.add(id);
+  // Re-render whichever grid is currently visible so the heart flips
+  // immediately, on every screen a card can appear on.
+  $all('.screen.active .pgrid .pcard-heart[data-wish="'+id+'"]').forEach(btn => {
+    const wished = state.wishlistIds.has(id);
+    btn.classList.toggle('active', wished);
+    btn.textContent = wished ? '♥' : '♡';
+  });
+  if($('#screen-wishlist').classList.contains('active')) renderWishlistScreen();
+}
+
+function addToBag(id){
+  state.bagQty.set(id, (state.bagQty.get(id) || 0) + 1);
+  $all('.pcard-bag-btn[data-bag="'+id+'"]').forEach(btn => {
+    btn.classList.add('in-bag');
+    btn.textContent = 'Added ✓';
+  });
+  updateBagNavBadge();
+  showHomeNudge('✓ Added to bag', 1800);
+}
+
+function changeBagQty(id, delta){
+  const current = state.bagQty.get(id) || 0;
+  const next = current + delta;
+  if(next <= 0) state.bagQty.delete(id);
+  else state.bagQty.set(id, next);
+  renderBagScreen();
+}
+
+function removeFromBag(id){
+  state.bagQty.delete(id);
+  $all('.pcard-bag-btn[data-bag="'+id+'"]').forEach(btn => {
+    btn.classList.remove('in-bag');
+    btn.textContent = '+ Add to Bag';
+  });
+  renderBagScreen();
+}
+
+// Delegated so it works for every grid/screen these buttons ever render
+// into, without re-binding listeners on every re-render.
+document.addEventListener('click', (e) => {
+  const heartBtn = e.target.closest('.pcard-heart');
+  if(heartBtn){ toggleWishlist(heartBtn.dataset.wish); return; }
+
+  const bagBtn = e.target.closest('.pcard-bag-btn');
+  if(bagBtn){ addToBag(bagBtn.dataset.bag); return; }
+
+  const qtyUp = e.target.closest('[data-qty-up]');
+  if(qtyUp){ changeBagQty(qtyUp.dataset.qtyUp, 1); return; }
+
+  const qtyDown = e.target.closest('[data-qty-down]');
+  if(qtyDown){ changeBagQty(qtyDown.dataset.qtyDown, -1); return; }
+
+  const removeLink = e.target.closest('[data-bag-remove]');
+  if(removeLink){ removeFromBag(removeLink.dataset.bagRemove); return; }
+});
+
+$('#bag-checkout-btn').addEventListener('click', () => {
+  // No real payment/order flow exists for the Bag outside of Shop
+  // Together's own checkout -- honest placeholder rather than pretending
+  // to charge a card, same spirit as the login screen not faking a
+  // password check before this rewrite.
+  showHomeNudge('This demo bag doesn\'t place real orders -- try Shop Together to check out with a squad.', 4000);
+});
+
+// A handful of realistic-looking notifications built from real catalog
+// items once they're loaded, rather than an empty inbox. Not tied to any
+// real event system -- purely illustrative, like the "🔔 3" badge already
+// hardcoded into the topbar before this.
+function buildNotifications(){
+  const items = state.homeCatalog;
+  const pick = (i) => items[i % Math.max(items.length, 1)];
+  const notifs = [
+    { ic: '🎉', title: 'Festive Sale is live', sub: 'Up to 70% off across Fashion, Beauty & Home -- for 48 hours only.' },
+  ];
+  if(items.length){
+    const a = pick(3), b = pick(11);
+    notifs.push({ ic: '📦', title: 'Order out for delivery', sub: `${a.name} is arriving today by 8 PM.` });
+    notifs.push({ ic: '💸', title: 'Price drop on an item you liked', sub: `${b.name} is now ₹${b.price} (was ₹${b.mrp}).` });
+  }
+  notifs.push({ ic: '👥', title: 'Shop Together', sub: 'Start a squad and vote on outfits live with friends.' });
+  return notifs;
+}
+
+function renderNotifications(){
+  const list = $('#notif-list');
+  const notifs = buildNotifications();
+  list.innerHTML = notifs.map(n => `
+    <div class="notif-row">
+      <span class="notif-ic">${n.ic}</span>
+      <div class="notif-body">
+        <div class="notif-title">${escapeHtml(n.title)}</div>
+        <div class="notif-sub">${escapeHtml(n.sub)}</div>
+      </div>
+    </div>`).join('');
+}
+
+function markNotificationsRead(){
+  state.notifUnread = 0;
+  const dot = $('#topbar-notif-dot');
+  if(dot) dot.style.display = 'none';
+}
+
+$('#topbar-notif-btn').addEventListener('click', () => showScreen('screen-notifications'));
+$('#topbar-wishlist-btn').addEventListener('click', () => {
+  ensureHomeCatalogLoaded().then(() => showScreen('screen-wishlist'));
+});
+
+// Catalog (and the hero banner photo it feeds) should be ready by the time
+// anyone reaches the home screen, not just the first time they open a
+// feature screen -- otherwise the banner shows no photo until you've
+// visited Wishlist/Fwd/Now/LUXE once.
+ensureHomeCatalogLoaded();
 
 $all('.tab-btn').forEach(btn => btn.addEventListener('click', () => {
   $all('.tab-btn').forEach(b=>b.classList.remove('active'));
@@ -309,11 +618,6 @@ function setupOptionalToggle(toggleId, sectionId){
   $('#'+toggleId).addEventListener('click', () => expandOptionalSection(sectionId, toggleId));
 }
 setupOptionalToggle('toggle-recipient', 'recipient-section');
-setupOptionalToggle('toggle-itinerary', 'itinerary-section');
-
-$all('.preset-chip').forEach(btn => btn.addEventListener('click', () => {
-  $('#create-itinerary').value = btn.dataset.preset;
-}));
 
 $all('.recipient-chip').forEach(btn => btn.addEventListener('click', () => {
   $('#create-recipient-relation').value = btn.dataset.recipient;
@@ -327,7 +631,11 @@ $('#create-form').addEventListener('submit', async (e) => {
   const occasion = $('#create-occasion').value.trim() || 'Just browsing';
   const when = $('#create-when').value;
   const budget = parseInt($('#create-budget').value) || 0;
-  const itinerary = $('#create-itinerary').value.split(',').map(s => s.trim()).filter(Boolean);
+  // The itinerary UI (multi-day trip tagging) has been removed from the
+  // create-room form -- backend still accepts an itinerary list (older
+  // rooms and the tagging logic that reads room.itinerary elsewhere still
+  // work fine), it's just always empty from this form now.
+  const itinerary = [];
   const giftRecipientRelation = $('#create-recipient-relation').value.trim();
   const giftRecipientName = $('#create-recipient-name').value.trim();
   if(!name) return;
@@ -1050,7 +1358,7 @@ function cardHtml(item, room, isTopPick=false, matchesAi=false){
   return `
     <div class="card ${inCart ? 'in-cart' : ''} ${isContestedInCart ? 'contested' : ''} ${isTied ? 'tied' : ''} ${needsMyVote ? 'needs-vote' : ''} ${iLikedIt ? 'my-like' : ''}" data-card="${item.id}">
       ${inCart ? '<span class="cart-badge">In squad cart</span>' : ''}
-      ${!inCart && !isTied && !needsMyVote && !iLikedIt && matchesAi ? '<span class="ai-match-badge">✦ You asked for this</span>' : (!inCart && !isTied && !needsMyVote && !iLikedIt && isTopPick ? '<span class="top-pick-badge">✦ Top pick for you</span>' : '')}
+      ${!inCart && !isTied && !needsMyVote && !iLikedIt && isTopPick ? '<span class="top-pick-badge">✦ Top pick for you</span>' : ''}
       ${!inCart && justLaunched ? '<span class="launched-badge">Just Launched</span>' : ''}
       ${isContestedInCart ? '<span class="objection-badge">⚠ Objected</span>' : ''}
       ${isTied ? '<span class="split-badge">Split vote</span>' : ''}
@@ -1830,6 +2138,29 @@ function renderChat(room) {
       div.innerHTML = m.is_ai
         ? `<div class="who">✦ AI Stylist</div><div>${escapeHtml(m.text)}</div>`
         : `<div class="who">${escapeHtml(m.name)}</div><div>${escapeHtml(m.text)}</div>`;
+      // AI replies that come with product_ids (see
+      // pick_chat_recommendation_items() in ai_coordinator.py) get a row of
+      // tappable product chips so the reply doubles as an actual
+      // recommendation, not just confirmation text. Tapping one jumps to
+      // that exact card on the shelf via the same jumpToItemCard() path
+      // checkout recommendations already use.
+      if(m.is_ai && Array.isArray(m.product_ids) && m.product_ids.length){
+        const products = m.product_ids
+          .map(id => state.catalog.find(c => c.id === id))
+          .filter(Boolean);
+        if(products.length){
+          const row = document.createElement('div');
+          row.className = 'chat-ai-products';
+          row.innerHTML = products.map(p => `
+            <button type="button" class="chat-ai-product" data-jump-id="${escapeHtml(p.id)}">
+              <img src="${escapeHtml(p.image)}" alt="${escapeHtml(p.name)}" loading="lazy" />
+              <div class="caip-name">${escapeHtml(p.name)}</div>
+              <div class="caip-price">₹${p.price}</div>
+            </button>
+          `).join('');
+          div.appendChild(row);
+        }
+      }
       list.appendChild(div);
     } else {
       const wrapper = document.createElement('div');
@@ -1862,6 +2193,23 @@ function renderChat(room) {
     $all('.unread-dot').forEach(d => d.classList.add('show'));
   }
 }
+
+// Delegated so it keeps working across every renderChat() re-render
+// (chat list innerHTML gets rebuilt on every message) instead of needing
+// listeners rebound per-card.
+$('#chat-messages')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('.chat-ai-product');
+  if(!btn) return;
+  const id = btn.getAttribute('data-jump-id');
+  if(!id) return;
+  // Chat is an overlay drawer on top of screen-room, not a separate screen --
+  // jumpToItemCard()'s showScreen('screen-room') is a no-op while it's open,
+  // so the card ends up scrolled/highlighted underneath a drawer that's still
+  // covering it. Close the drawer first, same as the existing "Jump to item"
+  // button in the tie-discussion context note does.
+  closeChatDrawer();
+  jumpToItemCard(id);
+});
 
 $('#chat-input').addEventListener('input', () => {
   if (!state.isCurrentlyTypingSignal) {
@@ -2794,7 +3142,6 @@ function openLandingForReminder(occasion, relation, recipientName){
   showScreen('screen-profile');
   showScreen('screen-landing');
   $('#create-occasion').value = occasion;
-  $('#create-itinerary').value = '';
   $('#create-recipient-relation').value = relation || '';
   $('#create-recipient-name').value = recipientName || '';
   $all('.recipient-chip').forEach(c => c.classList.toggle('active', c.dataset.recipient === relation));

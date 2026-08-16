@@ -1,10 +1,13 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import random
+import re
+import secrets
 import string
 import time
-import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict
@@ -18,6 +21,7 @@ from ai_coordinator import (
     get_ai_suggestion,
     relevant_category_ids,
     parse_ai_chat_intent,
+    pick_chat_recommendation_items,
     infer_function_for_item,
     tie_break_advice,
     pick_surprise_items,
@@ -255,12 +259,52 @@ def save_finished_squads():
 
 finished_squads: list = load_finished_squads()
 
-# ---- persistent accounts (user_id -> {name, taste_profile}) ------------
+# ---- persistent accounts (email -> {name, password_hash, salt, taste_profile}) --
 # This is the one piece of state that survives a "Switch account" or a
 # browser restart -- everything else in this app is scoped to a room or a
-# tab. No passwords are stored here (or anywhere) -- see /api/login below
-# for why that's a deliberate choice, not an oversight.
+# tab. Keyed by email (not a random id) because email is the thing that's
+# actually unique per person -- two different people can share a first
+# name, but not an inbox.
 USERS_FILE = BASE_DIR / "users.json"
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+MIN_PASSWORD_LEN = 6
+
+# PBKDF2-SHA256 rather than storing the password itself or a bare sha256 of
+# it: a bare hash is crackable at billions of guesses/sec on a GPU since it
+# has no cost function, and reversible storage means a leaked users.json
+# leaks every password directly. 200k iterations is OWASP's current
+# floor-ish recommendation for PBKDF2-SHA256 -- slow enough to blunt
+# brute-forcing, fast enough that a single login isn't noticeably slower.
+# This is dependency-free (hashlib is stdlib) which matters here since
+# requirements.txt is deliberately just fastapi+uvicorn; reach for bcrypt/
+# argon2 instead if this ever needs to be production-grade rather than
+# demo-grade.
+PBKDF2_ITERATIONS = 200_000
+
+
+def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+    """Returns (hash_hex, salt_hex). Pass an existing salt_hex to re-hash a
+    candidate password for comparison against a stored hash; omit it to
+    generate a fresh salt for a new account. A per-user random salt means
+    two people who happen to pick the same password don't end up with the
+    same stored hash -- which matters because identical hashes would let
+    someone with read access to users.json spot password reuse across
+    accounts without ever cracking anything."""
+    salt_hex = salt_hex or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), PBKDF2_ITERATIONS
+    )
+    return digest.hex(), salt_hex
+
+
+def verify_password(password: str, salt_hex: str, expected_hash_hex: str) -> bool:
+    # compare_digest instead of == -- a plain string comparison exits on the
+    # first mismatched byte, which leaks (via response timing) how many
+    # leading characters a guess got right. Irrelevant over a local demo
+    # connection, but it costs nothing to do it right.
+    candidate_hash, _ = hash_password(password, salt_hex)
+    return hmac.compare_digest(candidate_hash, expected_hash_hex)
 
 
 def load_users() -> Dict[str, dict]:
@@ -288,86 +332,75 @@ users: Dict[str, dict] = load_users()
 
 
 class LoginRequest(BaseModel):
-    name: str
-    # Set by the frontend ONLY after the person has already been asked
-    # "there's already a X -- is that you?" and answered. Absent (False) on
-    # every normal first attempt. See the collision handling below for why
-    # this two-step exists instead of matching by name outright.
-    confirm_existing: bool = False
-    confirm_new: bool = False
+    email: str
+    password: str
+
 
 class SignupRequest(BaseModel):
     email: str
     name: str
+    password: str
 
 
 @app.post("/api/login")
 def login(req: LoginRequest):
-    name = req.name.strip()
+    email = req.email.strip().lower()
+    password = req.password
 
-    if not name:
-        return {"ok": False, "error": "missing_name"}
+    if not email or not password:
+        return {"ok": False, "error": "missing_fields"}
 
-    # Look for an existing user by name -- but DON'T act on a match yet.
-    # Matching-by-name is genuinely needed (it's what makes "Switch account"
-    # on a shared device return you to your own saved taste profile instead
-    # of a blank one), so it can't just be removed. The bug was auto-logging
-    # into whatever account matched: two different physical people who
-    # happen to type the same name (two "Yoshi"s, two people both typing a
-    # generic test name at a demo) would silently merge into one account,
-    # each seeing the other's taste profile and gift reminders. Neither of
-    # those people asked for that, and neither would notice until something
-    # looked wrong.
-    match = None
-    for user_id, record in users.items():
-        if record.get("name", "").strip().lower() == name.lower():
-            match = (user_id, record.get("name", "").strip())
-            break
+    record = users.get(email)
 
-    if match and not req.confirm_new:
-        user_id, existing_name = match
-        if req.confirm_existing:
-            # The person already said "yes, that's me" on a prior submit --
-            # NOW it's safe to log them into the existing account.
-            return {"ok": True, "user_id": user_id, "name": existing_name}
-        # First time we've seen this name collide -- don't decide for them.
-        # Ask once. Costs nothing on the common case (a unique name never
-        # reaches this branch at all).
-        return {"ok": False, "error": "name_taken", "existing_name": existing_name}
+    # Same generic "invalid_credentials" whether the email doesn't exist at
+    # all or the password just doesn't match it. A distinct "no account
+    # with that email" error is friendlier, but it also hands an attacker a
+    # free way to enumerate which emails are registered one guess at a
+    # time -- the same failure mode a real login screen avoids by design.
+    # `"password_hash" not in record` covers an account created under the
+    # old name-only login before this rewrite: it has no password to check
+    # against, so it's treated as not-found rather than crashing on a
+    # missing key.
+    if not record or "password_hash" not in record:
+        return {"ok": False, "error": "invalid_credentials"}
 
-    # No collision, OR the person explicitly said "that's not me" -- create
-    # a fresh, separate account. Deliberately still stored under the SAME
-    # display name if confirm_new was set: two different people are allowed
-    # to share a first name; giving one of them a silently-different label
-    # would be more confusing than two accounts that happen to look the same.
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    if not verify_password(password, record.get("salt", ""), record["password_hash"]):
+        return {"ok": False, "error": "invalid_credentials"}
 
-    users[user_id] = {
-        "name": name,
-        "taste_profile": {}
-    }
-    save_users()
+    return {"ok": True, "user_id": email, "name": record.get("name", "")}
 
-    return {
-        "ok": True,
-        "user_id": user_id,
-        "name": name
-    }
-    
 
 @app.post("/api/signup")
 def signup(req: SignupRequest):
     email = req.email.strip().lower()
     name = req.name.strip()
-    if not email or not name:
+    password = req.password
+
+    if not email or not name or not password:
         return {"ok": False, "error": "missing_fields"}
+    if not EMAIL_RE.match(email):
+        return {"ok": False, "error": "invalid_email"}
+    if len(password) < MIN_PASSWORD_LEN:
+        return {"ok": False, "error": "weak_password"}
     if email in users:
         # Someone else grabbed this email between the login check and now --
-        # don't silently overwrite an existing account's name/history.
+        # don't silently overwrite an existing account's password/history.
         return {"ok": False, "error": "already_exists"}
-    users[email] = {"name": name, "taste_profile": {}}
+
+    password_hash, salt = hash_password(password)
+    users[email] = {
+        "name": name,
+        "password_hash": password_hash,
+        "salt": salt,
+        "taste_profile": {},
+    }
     save_users()
-    return {"ok": True}
+
+    # Log the person straight in rather than bouncing them to a separate
+    # LOGIN step -- they just proved they know this email+password by
+    # typing it here, so re-asking for it a second time on the very next
+    # screen would be a speed bump with no real security benefit.
+    return {"ok": True, "user_id": email, "name": name}
 
 
 class CreateRoomRequest(BaseModel):
@@ -634,6 +667,20 @@ def is_gift_split_room(room: dict) -> bool:
     return is_gift_recipient_set(room) and len(room.get("participants", {})) > 1
 
 
+@app.get("/api/catalog")
+def get_catalog():
+    """Full product catalog, unscoped to any room.
+
+    /api/rooms/{room_id} already returns the catalog, but only once you're
+    inside a squad -- the home screen's own features (wishlist, bag, the
+    LUXE/fwd/now shelves) need product data before anyone's created or
+    joined a room at all, so this exists as a plain, no-args read of the
+    same CATALOG the rest of the app already uses. Read-only, nothing here
+    touches rooms or accounts.
+    """
+    return {"catalog": CATALOG}
+
+
 @app.post("/api/rooms")
 def create_room(req: CreateRoomRequest):
     code = make_room_code()
@@ -670,12 +717,12 @@ def create_demo_room():
 def persistent_profiles_for_room(room: dict) -> Dict[str, dict]:
     """client_id -> that person's persistent taste_profile from users.json,
     via the identifier they logged in with (room["participant_emails"], set
-    on websocket connect -- named "emails" from the earlier email-based login,
-    now actually holding the name-login's user_id, but the lookup below still
-    works correctly since it's just a key into `users`). Anyone without a
-    stored identifier (shouldn't normally happen, but the query param is
-    optional) just gets an empty profile -- score_feed() already treats that
-    as "no persistent signal yet", not an error."""
+    on websocket connect -- genuinely holds each participant's email now
+    that /api/login requires real email+password, so this is a plain key
+    into `users`). Anyone without a stored identifier (shouldn't normally
+    happen, but the query param is optional) just gets an empty profile --
+    score_feed() already treats that as "no persistent signal yet", not an
+    error."""
     emails = room.get("participant_emails", {})
     return {
         cid: users.get(email, {}).get("taste_profile", {})
@@ -721,12 +768,13 @@ def get_reminders(email: str = ""):
             continue
         if squad.get("reminded"):
             continue
-        # "Just Browsing" isn't an occasion that recurs annually -- it's the
-        # absence of one. "Rhea's Just Browsing is coming up again!" is
-        # nonsense: there's no calendar date for "not having a specific
-        # plan." Only real occasions (Birthday, Anniversary, etc.) get a
-        # reminder a year later.
-        if squad.get("occasion") == "Just Browsing":
+        # A reminder a year later only makes sense for occasions that
+        # actually recur annually on a specific date. Birthday and
+        # Anniversary do; everything else here doesn't -- a trip, an
+        # office event, or "Just Browsing" isn't tied to a yearly date the
+        # same way, so "Parnika's Beach Trip is coming up again!" reads as
+        # false precision rather than a genuine callback.
+        if squad.get("occasion") not in ("Birthday", "Anniversary"):
             continue
 
         # Show the reminder to anyone who was in this squad. Simple and
@@ -1348,6 +1396,7 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                         # broken, not as "didn't match anything."
                         intent = parse_ai_chat_intent(text)
                         if intent is not None:
+                            rec_ids = None
                             if intent == "clear":
                                 room["ai_chat_filter"] = None
                                 reply = "Filter cleared -- showing everything again."
@@ -1357,10 +1406,19 @@ async def websocket_endpoint(ws: WebSocket, room_id: str):
                                 intent["requested_by"] = name
                                 room["ai_chat_filter"] = intent
                                 reply = f"Got it -- {intent['summary']}."
-                            room["chat"].append({
+                                # A handful of matching products right in the
+                                # chat bubble -- tappable via product_ids on
+                                # the frontend -- so the reply doubles as a
+                                # recommendation, not just a confirmation that
+                                # the shelf changed somewhere off-screen.
+                                rec_ids = pick_chat_recommendation_items(intent, CATALOG)
+                            ai_msg = {
                                 "name": "AI Stylist", "text": reply, "ts": time.time(),
                                 "is_ai": True,
-                            })
+                            }
+                            if rec_ids:
+                                ai_msg["product_ids"] = rec_ids
+                            room["chat"].append(ai_msg)
                             if len(room["chat"]) > MAX_CHAT_MESSAGES:
                                 del room["chat"][:-MAX_CHAT_MESSAGES]
                     # Sending a message implies the person's done typing -- clear

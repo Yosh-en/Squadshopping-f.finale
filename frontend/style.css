@@ -178,7 +178,8 @@ body {
   cursor: pointer;
 }
 
-.topbar-icons .ic .dot {
+.topbar-icons .ic .dot,
+.nav-item .nav-ic .dot {
   position: absolute;
   top: -6px;
   right: -8px;
@@ -237,6 +238,7 @@ body {
 
 .nav-item .nav-ic {
   font-size: 16px;
+  position: relative;
 }
 
 .nav-item .nav-label {
@@ -339,6 +341,26 @@ body {
   align-items: center;
   justify-content: center;
   font-size: 19px;
+  overflow: hidden;
+}
+
+/* Custom category icon, dropped into frontend/images/icons/ -- see the
+   README in that folder. Falls back to the original emoji (the sibling
+   .fallback-emoji span, toggled on via the <img>'s onerror in index.html)
+   whenever that specific file hasn't been uploaded yet, so the row never
+   shows a broken image. */
+.shortcut .circ img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.shortcut .circ .fallback-emoji {
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
 }
 
 .shortcut span {
@@ -354,6 +376,17 @@ body {
   overflow-x: auto;
   align-items: center;
   background: var(--surface);
+  /* This row scrolls horizontally but lives inside the vertically-scrolling
+     home screen. Without telling the browser it's horizontal-only, a tap or
+     small drag here can get misread as the start of a vertical page scroll,
+     which is what reads as the row (and the screen behind it) "sliding up
+     and down" when you tap a chip. pan-x scopes touch handling to this axis
+     only; overscroll-behavior-x stops it from handing off to the page's own
+     scroll once it hits either end, instead of rubber-banding the whole
+     screen. */
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .trending-label {
@@ -385,6 +418,32 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-banner .eyebrow,
+.hero-banner h2 {
+  position: relative;
+  z-index: 1;
+  /* Text stays readable over the product photo either way -- a soft shadow
+     instead of a scrim over the whole banner, since a scrim would dim the
+     photo the banner exists to show off. */
+  text-shadow: 0 1px 6px rgba(0,0,0,0.45);
+}
+
+.hero-banner-product {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 46%;
+  height: 100%;
+  object-fit: cover;
+  /* Fades into the gradient on the left rather than a hard vertical edge,
+     so it reads as part of the banner instead of a photo pasted on top. */
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 40%);
+  mask-image: linear-gradient(to right, transparent, #000 40%);
+  opacity: 0.9;
 }
 
 .hero-banner .eyebrow {
@@ -825,76 +884,6 @@ input:focus {
   font-size: 12px;
   margin-top: 8px;
   min-height: 14px;
-}
-
-/* Only ever appears on an actual name collision -- see main.py's /api/login.
-   Rendered as its own bordered panel, not loose text plus buttons jammed
-   against the LOGIN button below: that earlier version put three full-width
-   buttons in a row with no separation, and the middle one (LOGIN) would only
-   have re-asked the same question. While this is showing, .collision-pending
-   hides LOGIN and these two answers act as the submit. */
-.login-collision {
-  color: var(--ink);
-  background: var(--canvas);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
-  margin-top: 4px;
-  margin-bottom: 4px;
-  min-height: 0;
-}
-
-.login-collision-q {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--ink);
-  margin-bottom: 10px;
-}
-
-.login-collision-q b {
-  font-weight: 700;
-}
-
-.login-collision-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.login-collision-yes,
-.login-collision-no {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  padding: 10px 6px;
-  border-radius: 8px;
-  font-weight: 700;
-  font-size: 11.5px;
-  line-height: 1.25;
-  cursor: pointer;
-  font-family: 'Inter';
-}
-
-.login-collision-yes {
-  background: var(--pink);
-  color: #fff;
-}
-
-.login-collision-yes:active {
-  background: var(--pink-dark);
-}
-
-.login-collision-no {
-  background: #fff;
-  color: var(--ink);
-  border: 1.5px solid var(--border);
-}
-
-.login-collision-no:active {
-  background: var(--border);
-}
-
-#onboarding-login-form.collision-pending .login-cta {
-  display: none;
 }
 
 .hint {
@@ -1494,6 +1483,57 @@ input:focus {
 
 .chat-msg.ai .who {
   color: #7A4FA0;
+}
+
+/* Tappable product recommendations under an AI Stylist reply -- see
+   product_ids on the chat message (backend/main.py) and
+   pick_chat_recommendation_items() in ai_coordinator.py. */
+.chat-ai-products {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin-top: 8px;
+  padding-bottom: 2px;
+}
+
+.chat-ai-product {
+  flex: 0 0 auto;
+  width: 74px;
+  background: #fff;
+  border: 1px solid #E9D9F5;
+  border-radius: 10px;
+  padding: 5px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.chat-ai-product:active {
+  transform: scale(0.97);
+}
+
+.chat-ai-product img {
+  width: 100%;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+  background: var(--canvas);
+}
+
+.chat-ai-product .caip-name {
+  font-size: 9.5px;
+  font-weight: 600;
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-ai-product .caip-price {
+  font-size: 9px;
+  color: var(--muted);
 }
 
 .chat-form{
@@ -3606,4 +3646,359 @@ input:focus {
   -webkit-box-shadow: 0 0 0 1000px transparent inset !important;
   -webkit-text-fill-color: var(--ink) !important;
   transition: background-color 9999s ease-in-out 0s;
+}
+/* ---------- Home-nav feature screens (Notifications, Wishlist, Bag,
+   Fwd, Now, LUXE) -- lightweight shelves built from the shared catalog,
+   not real backend-persisted features. See app.js's ensureHomeCatalogLoaded
+   and renderProductGrid for the shared plumbing behind all of them. ---- */
+
+.simple-screen-header {
+  font-weight: 800;
+  font-size: 17px;
+  color: var(--ink);
+  padding: 14px 16px 10px;
+  flex-shrink: 0;
+}
+
+#screen-notifications,
+#screen-wishlist,
+#screen-bag,
+#screen-fwd,
+#screen-now,
+#screen-luxe {
+  overflow-y: auto;
+}
+
+/* ---- Notifications ---- */
+.notif-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.notif-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.notif-row .notif-ic {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 26px;
+  text-align: center;
+}
+
+.notif-row .notif-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.notif-row .notif-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.notif-row .notif-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+/* ---- Shared product grid (Wishlist / Fwd / Now / LUXE) ---- */
+.pgrid {
+  padding: 12px 12px 24px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 340px) {
+  .pgrid { grid-template-columns: 1fr; }
+}
+
+.pcard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.pcard-media {
+  position: relative;
+  aspect-ratio: 3/4;
+  background: var(--canvas);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  overflow: hidden;
+}
+
+.pcard-media .media-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pcard-heart {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.92);
+  color: var(--muted);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+.pcard-heart.active {
+  color: var(--pink);
+}
+
+.pcard-body {
+  padding: 8px 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pcard-brand {
+  font-weight: 800;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+
+.pcard-name {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pcard-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
+.pcard-price-row .price {
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.pcard-price-row .mrp {
+  color: var(--muted);
+  text-decoration: line-through;
+  font-size: 10.5px;
+}
+
+.pcard-price-row .discount {
+  color: #0E6B3F;
+  font-weight: 700;
+  font-size: 10px;
+}
+
+.pcard-bag-btn {
+  margin-top: 7px;
+  border: 1.5px solid var(--pink);
+  background: #fff;
+  color: var(--pink);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.2px;
+  border-radius: 7px;
+  padding: 7px 0;
+  cursor: pointer;
+  font-family: 'Inter';
+}
+
+.pcard-bag-btn.in-bag {
+  background: var(--pink);
+  color: #fff;
+}
+
+.pgrid-empty {
+  grid-column: 1/-1;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 40px 20px;
+  line-height: 1.6;
+}
+
+/* ---- Bag ---- */
+.bag-list {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 16px 0;
+}
+
+.bag-row {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.bag-row-media {
+  width: 64px;
+  height: 80px;
+  border-radius: 8px;
+  background: var(--canvas);
+  flex-shrink: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+}
+
+.bag-row-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.bag-row-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bag-row-brand {
+  font-weight: 800;
+  font-size: 12.5px;
+}
+
+.bag-row-name {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.bag-row-price {
+  font-weight: 800;
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+
+.bag-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.bag-qty-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bag-qty-val {
+  font-weight: 700;
+  font-size: 12px;
+  min-width: 14px;
+  text-align: center;
+}
+
+.bag-remove-link {
+  font-size: 11px;
+  color: var(--pink-dark);
+  text-decoration: underline;
+  cursor: pointer;
+  margin-left: auto;
+}
+
+.bag-summary {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 12px 16px 16px;
+  background: var(--surface);
+}
+
+.bag-summary-row {
+  display: flex;
+  justify-content: space-between;
+  font-weight: 800;
+  font-size: 14px;
+  margin-bottom: 10px;
+}
+
+.bag-empty {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 60px 20px;
+  line-height: 1.6;
+}
+
+/* ---- LUXE (darker, gold-accented theme -- distinct from the rest of the
+   app on purpose, the same way it's a visually separate zone in the real
+   app rather than just another shelf). ---- */
+.luxe-screen {
+  background: #14120F;
+}
+
+.luxe-header {
+  color: #E7C77E;
+}
+
+.luxe-screen .pcard {
+  background: #201C17;
+  border-color: #35302A;
+}
+
+.luxe-screen .pcard-media {
+  background: #2A251F;
+}
+
+.luxe-screen .pcard-brand,
+.luxe-screen .pcard-name,
+.luxe-screen .pcard-price-row .price {
+  color: #F0E4C8;
+}
+
+.luxe-screen .pcard-price-row .mrp {
+  color: #7d766a;
+}
+
+.luxe-screen .pcard-bag-btn {
+  border-color: #E7C77E;
+  color: #E7C77E;
+  background: transparent;
+}
+
+.luxe-screen .pcard-bag-btn.in-bag {
+  background: #E7C77E;
+  color: #14120F;
+}
+
+.luxe-screen .pgrid-empty {
+  color: #8a8375;
 }
